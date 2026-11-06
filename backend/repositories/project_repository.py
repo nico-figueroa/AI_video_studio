@@ -38,7 +38,9 @@ class ProjectRepository:
         )
 
     def list_projects(self) -> list[Project]:
-        return list(self.db.scalars(select(Project).order_by(Project.created_at.desc())))
+        return list(self.db.scalars(
+            select(Project).options(selectinload(Project.estimates)).order_by(Project.created_at.desc())
+        ))
 
     def save(self) -> None:
         self.db.commit()

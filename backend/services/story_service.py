@@ -1,7 +1,4 @@
 import re
-from pathlib import Path
-
-from database import STORAGE_DIR
 from models.models import Character, Project, Scene
 from repositories.project_repository import ProjectRepository
 from schemas.schemas import MAX_STORY_TITLE_LENGTH
@@ -22,13 +19,6 @@ class StoryService:
             return project
 
         if refresh:
-            asset_dir = STORAGE_DIR / "projects" / str(project.id)
-            for character in project.characters:
-                (asset_dir / f"character-{character.id}.png").unlink(missing_ok=True)
-            for scene in project.scenes:
-                (asset_dir / f"scene-{scene.id}.png").unlink(missing_ok=True)
-            if project.video_path:
-                Path(project.video_path).unlink(missing_ok=True)
             project.video_path = None
             project.selected_plan = None
             project.actual_cost = 0

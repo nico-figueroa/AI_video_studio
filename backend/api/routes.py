@@ -170,6 +170,7 @@ def get_characters(project_id: int, db: Session = Depends(get_db)) -> list[Chara
 @router.post("/characters/{character_id}/portrait", response_model=StatusOut)
 def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
     repository = ProjectRepository(db)
+    repository.begin_write()
     character = repository.get_character(character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found.")

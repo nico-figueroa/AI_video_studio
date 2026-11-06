@@ -16,6 +16,7 @@ def client(tmp_path, monkeypatch):
     import api.routes
     import main
     import services.image_service
+    import services.project_service
     import services.story_service
     import services.video_service
     from sqlalchemy import create_engine
@@ -23,7 +24,7 @@ def client(tmp_path, monkeypatch):
 
     storage = tmp_path / "storage"
     (storage / "projects").mkdir(parents=True)
-    for module in (main, api.routes, services.image_service, services.story_service, services.video_service):
+    for module in (main, api.routes, services.image_service, services.project_service, services.video_service):
         monkeypatch.setattr(module, "STORAGE_DIR", storage)
     static = next(route.app for route in app.routes if getattr(route, "name", None) == "storage")
     monkeypatch.setattr(static, "directory", str(storage / "projects"))
@@ -538,3 +539,240 @@ def test_scene_regeneration_and_export_claim_are_serialized(client, monkeypatch)
         scene_future.result(timeout=10)
         assert job_future.result(timeout=10)["status"] == "queued"
     assert client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["image_path"] is not None
+
+
+@pytest.mark.parametrize("failure", ["estimation", "commit"])
+def test_failed_refresh_preserves_published_media(client, monkeypatch, failure):
+    from models.models import Project
+    from repositories.project_repository import ProjectRepository
+    from services.estimation_service import EstimationService
+
+    client, sessions, storage = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "target_minutes": 1, "max_budget": 5, "max_wait_minutes": 20,
+    }).json()["project_id"]
+    client.post(f"/api/v1/projects/{project_id}/analyze")
+    client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    story = client.get(f"/api/v1/projects/{project_id}/story").json()
+    character_id, scene_id = story["characters"][0]["id"], story["scenes"][0]["id"]
+    client.post(f"/api/v1/characters/{character_id}/portrait")
+    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    directory = storage / "projects" / str(project_id)
+    paths = [directory / f"character-{character_id}.png", directory / f"scene-{scene_id}.png", directory / "video.mp4"]
+    paths[-1].write_bytes(b"old video")
+    with sessions() as db:
+        db.get(Project, project_id).video_path = str(paths[-1])
+        db.commit()
+    before = [path.read_bytes() for path in paths]
+    original_story = client.get(f"/api/v1/projects/{project_id}/story").json()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(f"{failure} failed")
+
+    if failure == "estimation":
+        monkeypatch.setattr(EstimationService, "calculate", fail)
+    else:
+        monkeypatch.setattr(ProjectRepository, "save", fail)
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        client.post(f"/api/v1/projects/{project_id}/story/regenerate")
+    assert [path.read_bytes() for path in paths] == before
+    assert client.get(f"/api/v1/projects/{project_id}/story").json() == original_story
+    assert client.get(f"/api/v1/projects/{project_id}").json()["video_url"] is not None
+
+
+def test_successful_refresh_removes_obsolete_media(client):
+    from models.models import Project
+
+    client, sessions, storage = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5, "max_wait_minutes": 20,
+    }).json()["project_id"]
+    client.post(f"/api/v1/projects/{project_id}/analyze")
+    client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    story = client.get(f"/api/v1/projects/{project_id}/story").json()
+    character_id, scene_id = story["characters"][0]["id"], story["scenes"][0]["id"]
+    client.post(f"/api/v1/characters/{character_id}/portrait")
+    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    directory = storage / "projects" / str(project_id)
+    paths = [directory / f"character-{character_id}.png", directory / f"scene-{scene_id}.png", directory / "video.mp4"]
+    paths[-1].write_bytes(b"old video")
+    with sessions() as db:
+        db.get(Project, project_id).video_path = str(paths[-1])
+        db.commit()
+    assert all(path.exists() for path in paths)
+    assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 200
+    assert not any(path.exists() for path in paths)
+
+
+def test_cleanup_preserves_new_media_published_after_refresh_commit(client, monkeypatch):
+    from repositories.project_repository import ProjectRepository
+    from services.project_service import ProjectService
+
+    client, sessions, storage = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5, "max_wait_minutes": 20,
+    }).json()["project_id"]
+    client.post(f"/api/v1/projects/{project_id}/analyze")
+    client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    old_scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    client.post(f"/api/v1/scenes/{old_scene}/generate")
+    old_path = storage / "projects" / str(project_id) / f"scene-{old_scene}.png"
+    original_cleanup = ProjectService._remove_obsolete_media
+
+    def publish_then_cleanup(service, project_id, obsolete):
+        with sessions() as db:
+            project = ProjectRepository(db).get_project(project_id)
+            scene = project.scenes[0]
+            scene.id = old_scene
+            old_path.write_bytes(b"newly published")
+            scene.image_path = f"/storage/projects/{project_id}/{old_path.name}"
+            db.commit()
+        original_cleanup(service, project_id, obsolete)
+
+    monkeypatch.setattr(ProjectService, "_remove_obsolete_media", publish_then_cleanup)
+    assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 200
+    assert old_path.read_bytes() == b"newly published"
+
+
+def test_cleanup_skips_files_when_export_starts_after_commit(client, monkeypatch, caplog):
+    from models.models import Job
+    from services.project_service import ProjectService
+
+    client, sessions, storage = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5, "max_wait_minutes": 20,
+    }).json()["project_id"]
+    client.post(f"/api/v1/projects/{project_id}/analyze")
+    client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    old_path = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
+    original_cleanup = ProjectService._remove_obsolete_media
+
+    def claim_then_cleanup(service, project_id, obsolete):
+        with sessions() as db:
+            db.add(Job(id="new-export", project_id=project_id, status="queued"))
+            db.commit()
+        original_cleanup(service, project_id, obsolete)
+
+    monkeypatch.setattr(ProjectService, "_remove_obsolete_media", claim_then_cleanup)
+    with caplog.at_level("INFO", logger="services.project_service"):
+        assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 200
+    assert old_path.exists()
+    assert "Skipping obsolete media cleanup" in caplog.text
+
+
+def test_cleanup_failure_is_logged_after_refresh(client, monkeypatch, caplog):
+    client, _, storage = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5, "max_wait_minutes": 20,
+    }).json()["project_id"]
+    client.post(f"/api/v1/projects/{project_id}/analyze")
+    client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    old_path = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
+    unlink = Path.unlink
+
+    def deny(self, *args, **kwargs):
+        if self == old_path:
+            raise PermissionError("locked file")
+        return unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny)
+    with caplog.at_level("ERROR", logger="services.project_service"):
+        assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 200
+    assert old_path.exists()
+    assert "Could not remove obsolete project media" in caplog.text
+
+
+def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from api.routes import generate_portrait, image_provider
+    from repositories.project_repository import ProjectRepository
+    from services.project_service import ProjectService
+    from services.story_service import StoryService
+    from schemas.schemas import StoryUpdate
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5, "max_wait_minutes": 20,
+    }).json()["project_id"]
+    client.post(f"/api/v1/projects/{project_id}/analyze")
+    client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    story = client.get(f"/api/v1/projects/{project_id}/story").json()
+    character_id = story["characters"][0]["id"]
+    story["characters"][0]["description"] = "New description"
+    payload = StoryUpdate(**story)
+    rendering, release, editing = Event(), Event(), Event()
+    original = image_provider.generate_character
+
+    def render(*args, **kwargs):
+        rendering.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(image_provider, "generate_character", render)
+
+    def portrait():
+        with sessions() as db:
+            return generate_portrait(character_id, db)
+
+    def edit():
+        with sessions() as db:
+            editing.set()
+            repository = ProjectRepository(db)
+            repository.begin_write()
+            project = ProjectService(repository).get(project_id)
+            StoryService(repository).update(project, payload.title, payload.summary, payload.characters, payload.scenes)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        portrait_future = pool.submit(portrait)
+        try:
+            assert rendering.wait(5)
+            edit_future = pool.submit(edit)
+            assert editing.wait(5)
+            assert not edit_future.done()
+        finally:
+            release.set()
+        assert portrait_future.result(timeout=10)["status"] == "completed"
+        edit_future.result(timeout=10)
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    assert character["description"] == "New description"
+    assert character["image_path"] is None
+
+
+def test_project_listing_loads_estimates_without_n_plus_one(client):
+    from sqlalchemy import event
+
+    client, sessions, _ = client
+    for index in range(5):
+        project_id = client.post("/api/v1/projects", json={
+            "prompt": f"A gardener finds doorway number {index}.",
+            "max_budget": 5, "max_wait_minutes": 20,
+        }).json()["project_id"]
+        client.post(f"/api/v1/projects/{project_id}/analyze")
+        client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
+    statements = []
+    engine = sessions.kw["bind"]
+
+    def count(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        response = client.get("/api/v1/projects")
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    assert response.status_code == 200
+    assert len(response.json()) == 5
+    assert all(project["estimated_cost"] is not None for project in response.json())
+    assert len(statements) == 2
