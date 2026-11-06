@@ -15,9 +15,9 @@ class ThreeActStructure(BaseModel):
 
 class StoryBibleData(BaseModel):
     title: str = Field(min_length=1, max_length=160)
-    summary: str
-    genre: str
-    target_audience: str
+    summary: str = Field(min_length=1, max_length=6000)
+    genre: str = Field(max_length=120)
+    target_audience: str = Field(max_length=240)
     three_act_structure: ThreeActStructure
     main_characters: list[CharacterSeed]
 

@@ -61,11 +61,13 @@ Open `http://localhost:3000`. To use another API origin, set `NEXT_PUBLIC_API_UR
 
 ## Migrate Existing Phase 1 Data
 
-Back up the SQLite file and media directory first. Create an empty PostgreSQL database and set `DATABASE_URL`, apply migrations (`alembic upgrade head` from `backend`), copy media (automatic on app startup or manually), then from the repository root run:
+Back up the active SQLite file at `backend\storage\studio.db` and the media directory first. For an installation that never completed the prior migration, use `backend\database\storage\studio.db` only if the active file does not exist. Create an empty PostgreSQL database and set `DATABASE_URL`, apply migrations (`alembic upgrade head` from `backend`), copy media (automatic on app startup or manually), then from the repository root run:
 
 ```powershell
-python scripts\migrate_sqlite_to_postgres.py --sqlite backend\database\storage\studio.db
+python scripts\migrate_sqlite_to_postgres.py --sqlite backend\storage\studio.db
 ```
+
+For an installation that never completed the prior migration and has no active database at `backend\storage\studio.db`, use `python scripts\migrate_sqlite_to_postgres.py --sqlite backend\database\storage\studio.db` instead.
 
 The importer preserves shared IDs, uses defaults for new Phase 2 fields, rewrites known local asset roots, refuses non-empty target tables, and does not delete SQLite rows or media. Verify row counts and media links before switching traffic. See the [database migration plan](./docs/04_database_design.md).
 

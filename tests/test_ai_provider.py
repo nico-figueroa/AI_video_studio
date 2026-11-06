@@ -95,3 +95,57 @@ def test_openai_provider_requires_a_server_key():
 
     with pytest.raises(AIProviderConfigurationError, match="OPENAI_API_KEY"):
         OpenAIProvider("", "gpt-5", "gpt-image-1")
+
+
+def test_openai_provider_wraps_structured_output_validation_errors():
+    import pytest
+
+    from services.ai.providers.base import AIProviderError
+
+    provider = OpenAIProvider("test-key", "gpt-5-test", "gpt-image-test")
+
+    def parse(**_):
+        StoryBibleData.model_validate({
+            "title": "",
+            "summary": "A story",
+            "genre": "Adventure",
+            "target_audience": "Everyone",
+            "three_act_structure": {
+                "act_one": "One",
+                "act_two": "Two",
+                "act_three": "Three",
+            },
+            "main_characters": [],
+        })
+
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))
+    )
+    with pytest.raises(AIProviderError, match="text generation failed"):
+        provider.generate_story("A story idea.", 1)
+
+
+def test_story_bible_schema_enforces_persistence_field_limits():
+    import pytest
+    from pydantic import ValidationError
+
+    valid_story = {
+        "title": "A story",
+        "summary": "A story summary.",
+        "genre": "Adventure",
+        "target_audience": "Everyone",
+        "three_act_structure": {
+            "act_one": "One",
+            "act_two": "Two",
+            "act_three": "Three",
+        },
+        "main_characters": [],
+    }
+    StoryBibleData.model_validate(valid_story)
+    for field, value in (
+        ("genre", "g" * 121),
+        ("target_audience", "a" * 241),
+        ("summary", "s" * 6001),
+    ):
+        with pytest.raises(ValidationError):
+            StoryBibleData.model_validate({**valid_story, field: value})

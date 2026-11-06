@@ -31,6 +31,9 @@ async def lifespan(_: FastAPI):
                 completed_at=datetime.now(timezone.utc),
             )
         )
+        db.execute(
+            update(Project).where(Project.status == "planning").values(status="analysis_failed")
+        )
         db.commit()
     yield
 

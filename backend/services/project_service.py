@@ -44,14 +44,15 @@ class ProjectService:
         project = self.get(project_id)
         if project.status == "planning":
             raise HTTPException(status_code=409, detail="Story planning is already running for this project.")
-        if project.scenes and not refresh:
+        if project.scenes and not refresh and project.status != "analysis_failed":
             return project
         if provider is None:
             provider = create_ai_provider(get_ai_configuration(self.repository.db))
         configuration = get_ai_configuration(self.repository.db)
-        scene_count = self.ai_estimation.scene_count_for(project.target_minutes)
+        scene_count = len(project.scenes) or self.ai_estimation.scene_count_for(project.target_minutes)
+        character_count = len(project.characters) or 3
         planning_estimate = self.ai_estimation.estimate_all(
-            configuration, character_count=3, scene_count=scene_count
+            configuration, character_count=character_count, scene_count=scene_count
         )[0]
         previous_status = project.status
         self._reserve_estimated_cost(project, planning_estimate.estimated_cost)

@@ -72,7 +72,19 @@ export default function StoryPage() {
         <label className="field-label" htmlFor="story-summary">THE STORY</label>
         <textarea id="story-summary" className="text-input summary-input" value={story.summary} onChange={(event) => setStory({ ...story, summary: event.target.value })} />
         <div className="eyebrow">THREE ACT STRUCTURE</div>
-        <div className="act-grid">{Object.entries(story.three_act_structure).map(([act, detail]) => <article key={act}><span>{act.replaceAll("_", " ").toUpperCase()}</span><p>{detail}</p></article>)}</div>
+        <div className="act-grid">{Object.entries(story.three_act_structure).map(([act, detail]) => <article key={act}>
+          <label className="field-label" htmlFor={`story-act-${act}`}>{act.replaceAll("_", " ").toUpperCase()}</label>
+          <textarea
+            id={`story-act-${act}`}
+            className="text-input"
+            aria-label={`${act.replaceAll("_", " ")} details`}
+            value={detail}
+            onChange={(event) => setStory({
+              ...story,
+              three_act_structure: { ...story.three_act_structure, [act]: event.target.value },
+            })}
+          />
+        </article>)}</div>
       </div>
       <div className="section-title"><div><div className="eyebrow">THE PEOPLE IN YOUR STORY</div><h2>Character bible</h2></div><span>{story.characters.length} characters</span></div>
       <div className="character-mini-grid">{story.characters.map((character, index) => <div className="character-mini" key={character.id}><div className={`character-monogram monogram-${index}`}>{character.name.slice(0, 1)}</div><div><input aria-label="Character name" className="inline-edit" value={character.name} onChange={(event) => setStory({ ...story, characters: story.characters.map((item) => item.id === character.id ? { ...item, name: event.target.value } : item) })} /><textarea aria-label={`Description for ${character.name}`} value={character.description} onChange={(event) => setStory({ ...story, characters: story.characters.map((item) => item.id === character.id ? { ...item, description: event.target.value } : item) })} /></div></div>)}</div>

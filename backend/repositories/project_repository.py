@@ -46,6 +46,7 @@ class ProjectRepository:
                 selectinload(Project.estimates),
             )
             .where(Project.id == project_id)
+            .execution_options(populate_existing=True)
         )
 
     def list_projects(self) -> list[Project]:
@@ -86,10 +87,18 @@ class ProjectRepository:
         ).delete(synchronize_session=False)
 
     def get_character(self, character_id: int) -> Character | None:
-        return self.db.get(Character, character_id)
+        return self.db.scalar(
+            select(Character)
+            .where(Character.id == character_id)
+            .execution_options(populate_existing=True)
+        )
 
     def get_scene(self, scene_id: int) -> Scene | None:
-        return self.db.get(Scene, scene_id)
+        return self.db.scalar(
+            select(Scene)
+            .where(Scene.id == scene_id)
+            .execution_options(populate_existing=True)
+        )
 
     def get_job(self, job_id: str) -> Job | None:
         return self.db.get(Job, job_id)

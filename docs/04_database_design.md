@@ -43,11 +43,11 @@ Singleton row (`id = 1`) with `provider`, `model`, `image_model`, `default_budge
 
 ## SQLite to PostgreSQL Runbook
 
-1. Stop the Phase 1 backend and take a verified backup of `backend/database/storage/studio.db` and its `projects` directory. Do not delete the source.
+1. Stop the backend and take a verified backup of the active SQLite database at `backend/storage/studio.db` and the `backend/storage/projects` directory. Do not delete the source. Only for installations that never completed the prior migration, if the active database does not exist, use `backend/database/storage/studio.db` as the fallback database and its `backend/database/storage/projects` directory.
 2. Create an empty PostgreSQL database (the database itself must exist before Alembic runs) and set `DATABASE_URL` in the root `.env`. For a local database named `ai_video_studio`, run `psql -U postgres -h localhost -p 5432 -d postgres -c "CREATE DATABASE ai_video_studio;"`; use the role from `DATABASE_URL` as the owner or grant it access.
 3. Install backend requirements, then from `backend` run `alembic upgrade head` (or start the app once to apply migrations).
 4. Ensure legacy project media is copied to `backend/storage/projects`, preserving project subdirectories. Startup performs a non-destructive copy.
-5. From the repository root run `python scripts\migrate_sqlite_to_postgres.py --sqlite backend\database\storage\studio.db`. The script copies shared table columns in FK order, rewrites known local asset roots, preserves IDs, resets PostgreSQL ID sequences, and refuses to write into non-empty target tables. `DATABASE_URL` supplies the target.
+5. From the repository root run `python scripts\migrate_sqlite_to_postgres.py --sqlite backend\storage\studio.db`. For an installation that never completed the prior migration and has no `backend/storage/studio.db`, use `python scripts\migrate_sqlite_to_postgres.py --sqlite backend\database\storage\studio.db` instead. The script copies shared table columns in FK order, rewrites known local asset roots, preserves IDs, resets PostgreSQL ID sequences, and refuses to write into non-empty target tables. `DATABASE_URL` supplies the target.
 6. Compare row counts for projects, characters, scenes, estimates, generated assets, and jobs. Open representative projects and verify every referenced asset before directing traffic to PostgreSQL.
 7. Keep the SQLite database and media backup read-only until verification and rollback windows expire. Roll back by stopping the service and restoring the previous release/configuration; do not reverse-import PostgreSQL writes into SQLite.
 

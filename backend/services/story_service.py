@@ -93,6 +93,11 @@ class StoryService:
         for item in characters:
             character = existing_characters.get(item.id)
             if character is not None:
+                portrait_details_changed = any(
+                    getattr(character, field) != getattr(item, field)
+                    for field in ("name", "description", "appearance")
+                )
+                portrait_prompt_changed = item.portrait_prompt != character.portrait_prompt
                 portrait_fields = (
                     "name", "description", "appearance", "portrait_prompt"
                 )
@@ -104,11 +109,20 @@ class StoryService:
                     "motivations", "relationships", "portrait_prompt",
                 ):
                     setattr(character, field, getattr(item, field))
+                if portrait_details_changed and not portrait_prompt_changed:
+                    character.portrait_prompt = (
+                        f"{character.name}. {character.appearance or character.description}"
+                    )
 
         existing_scenes = {scene.id: scene for scene in project.scenes}
         for item in scenes:
             scene = existing_scenes.get(item.id)
             if scene is not None:
+                image_details_changed = any(
+                    getattr(scene, field) != getattr(item, field)
+                    for field in ("title", "description", "visual_description")
+                )
+                image_prompt_changed = item.image_prompt != scene.image_prompt
                 if any(
                     getattr(scene, field) != getattr(item, field)
                     for field in ("title", "description", "visual_description", "image_prompt")
@@ -121,5 +135,9 @@ class StoryService:
                     "estimated_duration",
                 ):
                     setattr(scene, field, getattr(item, field))
+                if image_details_changed and not image_prompt_changed:
+                    scene.image_prompt = (
+                        f"{scene.title}. {scene.visual_description or scene.description}"
+                    )
 
         self.repository.save()

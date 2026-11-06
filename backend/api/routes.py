@@ -106,6 +106,16 @@ def reserve_estimated_cost(
     db.commit()
 
 
+def refund_estimated_cost(project_id: int, db: Session, cost: float) -> None:
+    repository = ProjectRepository(db)
+    if not db.in_transaction():
+        repository.begin_write()
+        repository.lock_project(project_id)
+    project = project_service(db).get(project_id)
+    project.estimated_spend = round(max(0, project.estimated_spend - cost), 4)
+    repository.save()
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -274,12 +284,29 @@ def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[
     project = project_service(db).get(character.project_id)
     repository.lock_project(project.id)
     repository.require_no_active_job(project.id)
+    project = project_service(db).get(project.id)
+    character = repository.get_character(character_id)
+    if character is None or character.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Character not found.")
+    initial_image_path = character.image_path
     provider = create_ai_provider(get_ai_configuration(db))
     estimate = estimate_project_operation(project, db, "character_portrait")
     reserve_estimated_cost(project, db, estimate)
     repository.begin_write()
     repository.lock_project(project.id)
-    repository.require_no_active_job(project.id)
+    try:
+        repository.require_no_active_job(project.id)
+    except HTTPException:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise
+    project = project_service(db).get(project.id)
+    character = repository.get_character(character_id)
+    if character is None or character.project_id != project.id:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise HTTPException(status_code=404, detail="Character not found.")
+    if character.image_path and character.image_path != initial_image_path:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        return {"status": "completed"}
     variation = uuid4().hex
     image = provider.generate_character_portrait(
         character.portrait_prompt or character.description,
@@ -323,14 +350,34 @@ def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False) -
     project = ProjectService(repository).get(scene.project_id)
     repository.lock_project(project.id)
     repository.require_no_active_job(project.id)
+    project = ProjectService(repository).get(project.id)
+    scene = repository.get_scene(scene_id)
+    if scene is None or scene.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Scene not found.")
     if scene.image_path and not regenerate:
         return
+    initial_image_path = scene.image_path
     provider = create_ai_provider(get_ai_configuration(db))
     estimate = estimate_project_operation(project, db, "scene_image")
     reserve_estimated_cost(project, db, estimate)
     repository.begin_write()
     repository.lock_project(project.id)
-    repository.require_no_active_job(project.id)
+    try:
+        repository.require_no_active_job(project.id)
+    except HTTPException:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise
+    project = ProjectService(repository).get(project.id)
+    scene = repository.get_scene(scene_id)
+    if scene is None or scene.project_id != project.id:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise HTTPException(status_code=404, detail="Scene not found.")
+    if not regenerate and scene.image_path:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        return
+    if regenerate and scene.image_path and scene.image_path != initial_image_path:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        return
     variation = uuid4().hex
     image = provider.generate_scene_image(
         scene.image_prompt or scene.visual_description or scene.description,

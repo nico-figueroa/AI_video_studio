@@ -57,6 +57,8 @@ class AIEstimationService:
         else:
             raise ValueError(f"Unknown generation operation: {operation}")
 
+        if operation in {"character_portrait", "scene_image", "all_images"}:
+            input_tokens = output_tokens = 0
         text_cost = ((input_tokens + output_tokens) / 1000) * self.text_usd_per_1k_tokens
         cost = text_cost + image_count * self.image_usd_per_image
         if operation == "characters":

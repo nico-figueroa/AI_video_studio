@@ -252,6 +252,178 @@ def test_ai_settings_estimates_and_project_budget_defaults(client, monkeypatch):
     assert client.get(f"/api/v1/projects/{constrained}").json()["status"] == "created"
 
 
+def test_image_estimates_charge_only_for_image_calls(client, monkeypatch):
+    from types import SimpleNamespace
+    from services.ai.estimation_service import AIEstimationService
+
+    client, _, _ = client
+    monkeypatch.setenv("ESTIMATED_TEXT_USD_PER_1K_TOKENS", "0.002")
+    monkeypatch.setenv("ESTIMATED_IMAGE_USD_PER_IMAGE", "0.04")
+    estimator = AIEstimationService()
+    configuration = SimpleNamespace(model="text-model", image_model="image-model")
+
+    portrait = estimator.estimate("character_portrait", configuration)
+    scene = estimator.estimate("scene_image", configuration)
+    all_images = estimator.estimate(
+        "all_images", configuration, character_count=3, scene_count=4
+    )
+    assert portrait.estimated_cost == 0.04
+    assert scene.estimated_cost == 0.04
+    assert all_images.estimated_cost == 7 * portrait.estimated_cost
+
+
+def test_ai_configuration_concurrent_first_access_is_singleton(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from models.models import AIConfiguration
+    from services.ai.configuration import get_ai_configuration
+
+    _, sessions, _ = client
+    barrier = Barrier(2)
+
+    def initialize():
+        with sessions() as db:
+            barrier.wait()
+            configuration = get_ai_configuration(db)
+            db.commit()
+            return configuration.id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(lambda _: initialize(), range(2))) == [1, 1]
+    with sessions() as db:
+        assert db.query(AIConfiguration).count() == 1
+
+
+def test_interrupted_planning_is_recovered_and_can_be_retried(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    with sessions() as db:
+        db.get(Project, project_id).status = "planning"
+        db.commit()
+    with TestClient(app) as restarted:
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_failed"
+        assert restarted.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_complete"
+
+
+def test_refresh_reservation_uses_visible_planning_estimate(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    with sessions() as db:
+        project = db.get(Project, project_id)
+        db.delete(project.characters[-1])
+        db.delete(project.scenes[-1])
+        db.commit()
+    planning_estimate = client.get(
+        f"/api/v1/projects/{project_id}/generation-estimates"
+    ).json()["planning"]["estimated_cost"]
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 200
+    spend_after = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    assert round(spend_after - spend_before, 4) == planning_estimate
+
+
+def test_story_edits_synchronize_unchanged_generation_prompts(client):
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    story = client.get(f"/api/v1/projects/{project_id}/story").json()
+    character = story["characters"][0]
+    character["name"] = "New Explorer"
+    character["appearance"] = "Silver expedition suit"
+    scene = story["scenes"][0]
+    scene["title"] = "The New Signal"
+    scene["visual_description"] = "A silver diver studies a luminous display."
+
+    assert client.put(f"/api/v1/projects/{project_id}/story", json=story).status_code == 200
+    saved = client.get(f"/api/v1/projects/{project_id}/story").json()
+    assert saved["characters"][0]["portrait_prompt"] == (
+        "New Explorer. Silver expedition suit"
+    )
+    assert saved["scenes"][0]["image_prompt"] == (
+        "The New Signal. A silver diver studies a luminous display."
+    )
+
+
+def test_scene_generation_rechecks_and_refunds_duplicate_reservation(client, monkeypatch):
+    from api.routes import generate_scene_image
+    from models.models import Scene
+    import api.routes
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    reserve = api.routes.reserve_estimated_cost
+    provider_calls = []
+
+    def reserve_then_complete_elsewhere(project, db, estimate):
+        reserve(project, db, estimate)
+        with sessions() as other_db:
+            scene = other_db.get(Scene, scene_id)
+            scene.image_path = f"/storage/projects/{project_id}/scene-{scene_id}.png"
+            other_db.commit()
+
+    monkeypatch.setattr(api.routes, "reserve_estimated_cost", reserve_then_complete_elsewhere)
+    monkeypatch.setattr(
+        FixtureAIProvider,
+        "generate_scene_image",
+        lambda *args, **kwargs: provider_calls.append("called"),
+    )
+    with sessions() as db:
+        generate_scene_image(scene_id, db)
+
+    assert provider_calls == []
+    assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
+
+
+def test_portrait_generation_refunds_reservation_if_character_was_deleted(client, monkeypatch):
+    from fastapi import HTTPException
+    from api.routes import generate_portrait
+    from models.models import Character
+    import api.routes
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    reserve = api.routes.reserve_estimated_cost
+
+    def reserve_then_delete(project, db, estimate):
+        reserve(project, db, estimate)
+        with sessions() as other_db:
+            other_db.delete(other_db.get(Character, character_id))
+            other_db.commit()
+
+    monkeypatch.setattr(api.routes, "reserve_estimated_cost", reserve_then_delete)
+    with sessions() as db, pytest.raises(HTTPException) as error:
+        generate_portrait(character_id, db)
+
+    assert error.value.status_code == 404
+    assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
+
+
 def test_active_jobs_block_refresh_and_duplicate_exports(client):
     from models.models import Job
     from sqlalchemy.exc import IntegrityError

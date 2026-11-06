@@ -41,9 +41,28 @@ export default function CharactersPage() {
   async function portrait(character: Character) {
     setBusyId(character.id);
     setError("");
-    try { await api.createPortrait(character.id); await refresh(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not generate portrait."); }
-    finally { setBusyId(null); }
+    let generationError = "";
+    try {
+      await api.createPortrait(character.id);
+    } catch (reason) {
+      generationError = reason instanceof Error ? reason.message : "Could not generate portrait.";
+    } finally {
+      const [charactersResult, projectResult] = await Promise.allSettled([
+        api.getCharacters(id),
+        api.getProject(id),
+      ]);
+      if (charactersResult.status === "fulfilled") setCharacters(charactersResult.value);
+      if (projectResult.status === "fulfilled") setProject(projectResult.value);
+
+      const refreshError = [charactersResult, projectResult]
+        .find((result) => result.status === "rejected");
+      const refreshMessage = refreshError?.status === "rejected"
+        ? refreshError.reason instanceof Error ? refreshError.reason.message : "Could not refresh project data."
+        : "";
+      const errors = [generationError, refreshMessage].filter(Boolean);
+      if (errors.length) setError(errors.join(" "));
+      setBusyId(null);
+    }
   }
 
   async function approve(character: Character) {

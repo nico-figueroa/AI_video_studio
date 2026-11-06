@@ -41,11 +41,28 @@ export default function ScenesPage() {
   async function makeImage(scene: Scene) {
     setBusyId(scene.id);
     setError("");
+    let generationError = "";
     try {
       await api.generateScene(scene.id, Boolean(scene.image_path));
-      await refresh();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not generate scene image."); }
-    finally { setBusyId(null); }
+    } catch (reason) {
+      generationError = reason instanceof Error ? reason.message : "Could not generate scene image.";
+    } finally {
+      const [scenesResult, projectResult] = await Promise.allSettled([
+        api.getScenes(id),
+        api.getProject(id),
+      ]);
+      if (scenesResult.status === "fulfilled") setScenes(scenesResult.value);
+      if (projectResult.status === "fulfilled") setProject(projectResult.value);
+
+      const refreshError = [scenesResult, projectResult]
+        .find((result) => result.status === "rejected");
+      const refreshMessage = refreshError?.status === "rejected"
+        ? refreshError.reason instanceof Error ? refreshError.reason.message : "Could not refresh project data."
+        : "";
+      const errors = [generationError, refreshMessage].filter(Boolean);
+      if (errors.length) setError(errors.join(" "));
+      setBusyId(null);
+    }
   }
 
   async function approve(scene: Scene) {

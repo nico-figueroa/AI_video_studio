@@ -36,7 +36,7 @@ class OpenAIProvider(AIProvider):
                     {"role": "user", "content": context},
                 ],
             )
-        except OpenAIError as error:
+        except (OpenAIError, ValueError) as error:
             raise AIProviderError(f"OpenAI text generation failed: {error}") from error
 
         message = response.choices[0].message
