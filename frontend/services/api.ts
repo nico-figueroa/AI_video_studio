@@ -14,12 +14,19 @@ export type Project = ProjectSummary & {
   prompt: string;
   max_budget: number;
   max_wait_minutes: number;
+  estimated_spend: number;
   video_url: string | null;
 };
 export type Character = {
   id: number;
   name: string;
   description: string;
+  role: string;
+  personality: string;
+  appearance: string;
+  motivations: string;
+  relationships: string;
+  portrait_prompt: string;
   image_path: string | null;
   approved: boolean;
 };
@@ -28,6 +35,9 @@ export type Scene = {
   scene_number: number;
   title: string;
   description: string;
+  visual_description: string;
+  image_prompt: string;
+  estimated_duration: number;
   image_path: string | null;
   status: string;
   approved: boolean;
@@ -35,6 +45,9 @@ export type Scene = {
 export type Story = {
   title: string;
   summary: string;
+  genre: string;
+  target_audience: string;
+  three_act_structure: Record<string, string>;
   characters: Character[];
   scenes: Scene[];
 };
@@ -46,6 +59,31 @@ export type Estimate = {
   quality_score: number;
   storage_mb: number;
   gpu_minutes: number;
+};
+export type GenerationEstimate = {
+  operation: string;
+  estimated_cost: number;
+  estimated_minutes: number;
+  estimated_model_usage: string;
+  estimated_api_calls: number;
+  notes: string;
+};
+export type GenerationEstimates = {
+  planning: GenerationEstimate;
+  story: GenerationEstimate;
+  characters: GenerationEstimate;
+  scenes: GenerationEstimate;
+  character_portrait: GenerationEstimate;
+  scene_image: GenerationEstimate;
+  all_images: GenerationEstimate;
+};
+export type AISettings = {
+  provider: "openai";
+  model: string;
+  image_model: string;
+  default_budget: number;
+  default_wait_minutes: number;
+  api_key_configured: boolean;
 };
 export type Estimates = {
   economy: Estimate;
@@ -66,6 +104,8 @@ export type Job = {
 export type Metrics = {
   estimated_cost: number;
   actual_cost: number;
+  estimated_ai_spend: number;
+  actual_provider_cost: number | null;
   estimated_time: number;
   actual_time: number | null;
   total_images: number;
@@ -108,6 +148,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getAISettings: () => request<AISettings>("/settings/ai"),
+  saveAISettings: (settings: Omit<AISettings, "api_key_configured">) =>
+    request<AISettings>("/settings/ai", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
   listProjects: () => request<ProjectSummary[]>("/projects"),
   createProject: (input: {
     prompt: string;
@@ -124,6 +170,8 @@ export const api = {
   ),
   getProject: (id: number) => request<Project>(`/projects/${id}`),
   getEstimates: (id: number) => request<Estimates>(`/projects/${id}/estimates`),
+  getGenerationEstimates: (id: number) =>
+    request<GenerationEstimates>(`/projects/${id}/generation-estimates`),
   selectPlan: (id: number, plan: PlanName) => request<{ selected_plan: PlanName }>(
     `/projects/${id}/select-plan`,
     { method: "POST", body: JSON.stringify({ plan }) },

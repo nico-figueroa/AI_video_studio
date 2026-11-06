@@ -11,15 +11,16 @@ from api.routes import router
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from database import Base, STORAGE_DIR, engine, migrate_legacy_storage
+from database import STORAGE_DIR, engine, migrate_legacy_storage, run_migrations
 from models.models import Job, Project
+from services.ai.providers.base import AIProviderConfigurationError, AIProviderError
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     migrate_legacy_storage()
     (STORAGE_DIR / "projects").mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(bind=engine)
+    run_migrations(engine)
     with Session(engine) as db:
         active_projects = db.query(Job.project_id).filter(Job.status.in_(["queued", "running"]))
         db.execute(update(Project).where(Project.id.in_(active_projects)).values(status="generation_failed"))
@@ -31,9 +32,6 @@ async def lifespan(_: FastAPI):
             )
         )
         db.commit()
-    next(index for index in Job.__table__.indexes if index.name == "uq_jobs_active_project").create(
-        bind=engine, checkfirst=True
-    )
     yield
 
 
@@ -43,6 +41,14 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(AIProviderError)
+async def handle_ai_provider_error(_: Request, error: AIProviderError) -> JSONResponse:
+    status_code = 503 if isinstance(error, AIProviderConfigurationError) else 502
+    return JSONResponse(status_code=status_code, content={"detail": str(error)})
+
+
 frontend_origins = [
     origin.strip() for origin in os.getenv(
         "STUDIO_FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"

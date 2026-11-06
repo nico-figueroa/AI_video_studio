@@ -10,6 +10,75 @@ from fastapi.testclient import TestClient
 from main import app
 
 
+class FixtureAIProvider:
+    def generate_story(self, prompt, target_minutes):
+        from schemas.ai_schemas import CharacterSeed, StoryBibleData, ThreeActStructure
+
+        title = "T" * 160 if len(prompt) > 160 else "The Forgotten Ocean"
+        return StoryBibleData(
+            title=title,
+            summary=f"A story shaped by this idea: {prompt}",
+            genre="Adventure",
+            target_audience="General audience",
+            three_act_structure=ThreeActStructure(
+                act_one="The discovery changes the protagonist's plans.",
+                act_two="The journey reveals a hidden conflict.",
+                act_three="A decisive choice changes the future.",
+            ),
+            main_characters=[
+                CharacterSeed(name="The Explorer", role="Protagonist", premise="A curious explorer."),
+                CharacterSeed(name="The Guide", role="Ally", premise="A local guide."),
+                CharacterSeed(name="The Guardian", role="Antagonist", premise="A protector of secrets."),
+            ],
+        )
+
+    def generate_character_bible(self, story):
+        from schemas.ai_schemas import CharacterBible, CharacterBibleData
+
+        return CharacterBible(characters=[
+            CharacterBibleData(
+                name=seed.name,
+                role=seed.role,
+                personality="Curious and determined.",
+                appearance="Distinctive field clothing.",
+                motivations="Discover the truth.",
+                relationships="Connected to the central mystery.",
+                portrait_prompt=f"Portrait of {seed.name}, cinematic and consistent.",
+            )
+            for seed in story.main_characters
+        ])
+
+    def generate_scene_plan(self, story, characters, target_minutes):
+        from schemas.ai_schemas import ScenePlan, ScenePlanData
+
+        titles = ["The Ordinary World", "A Strange Discovery", "Crossing the Threshold", "A New Beginning"]
+        return ScenePlan(scenes=[
+            ScenePlanData(
+                scene_number=index,
+                scene_title=title,
+                scene_description=f"{title} advances the story.",
+                visual_description=f"A cinematic view of {title.lower()}.",
+                image_prompt=f"Create a storyboard frame for {title.lower()}.",
+                estimated_duration=30,
+            )
+            for index, title in enumerate(titles, start=1)
+        ])
+
+    def generate_character_portrait(self, prompt, output_path):
+        from PIL import Image
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64), (60, 90, 70)).save(output_path)
+        return output_path
+
+    def generate_scene_image(self, prompt, output_path):
+        from PIL import Image
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64), (45, 70, 95)).save(output_path)
+        return output_path
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     from database import get_db
@@ -36,6 +105,11 @@ def client(tmp_path, monkeypatch):
     )
     TestingSession = sessionmaker(bind=test_engine, autoflush=False, expire_on_commit=False)
     monkeypatch.setattr(api.routes, "SessionLocal", TestingSession)
+    monkeypatch.setattr(api.routes, "create_ai_provider", lambda configuration: FixtureAIProvider())
+    monkeypatch.setattr(
+        services.project_service, "create_ai_provider",
+        lambda configuration: FixtureAIProvider(),
+    )
     monkeypatch.setattr(main, "engine", test_engine)
     monkeypatch.setattr(main, "migrate_legacy_storage", lambda: None)
 
@@ -80,7 +154,7 @@ def test_health_and_project_planning_flow(client):
     image_without_plan = client.post(
         f"/api/v1/scenes/{story['scenes'][0]['id']}/generate"
     )
-    assert image_without_plan.status_code == 409
+    assert image_without_plan.status_code == 200
     assert client.post(
         f"/api/v1/projects/{project_id}/select-plan",
         json={"plan": "economy"},
@@ -130,6 +204,52 @@ def test_health_and_project_planning_flow(client):
         json={"plan": "economy"},
     )
     assert too_slow.status_code == 422
+
+
+def test_ai_settings_estimates_and_project_budget_defaults(client, monkeypatch):
+    client, _, _ = client
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-returned")
+    settings = client.get("/api/v1/settings/ai").json()
+    assert settings["provider"] == "openai"
+    assert settings["api_key_configured"] is True
+    assert "test-key-not-returned" not in str(settings)
+
+    updated = client.put("/api/v1/settings/ai", json={
+        "provider": "openai",
+        "model": "gpt-5-test",
+        "image_model": "gpt-image-test",
+        "default_budget": 7.5,
+        "default_wait_minutes": 35,
+    })
+    assert updated.status_code == 200
+    assert updated.json()["default_budget"] == 7.5
+
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    project = client.get(f"/api/v1/projects/{project_id}").json()
+    assert project["status"] == "created"
+    assert project["max_budget"] == 7.5
+    assert project["max_wait_minutes"] == 35
+
+    estimates = client.get(
+        f"/api/v1/projects/{project_id}/generation-estimates"
+    ).json()
+    assert set(estimates) == {
+        "planning", "story", "characters", "scenes", "character_portrait",
+        "scene_image", "all_images",
+    }
+    assert estimates["planning"]["estimated_api_calls"] == 3
+    assert "gpt-5-test" in estimates["story"]["estimated_model_usage"]
+    assert estimates["all_images"]["estimated_api_calls"] == 7
+
+    constrained = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 0.001,
+    }).json()["project_id"]
+    rejected = client.post(f"/api/v1/projects/{constrained}/analyze")
+    assert rejected.status_code == 422
+    assert client.get(f"/api/v1/projects/{constrained}").json()["status"] == "created"
 
 
 def test_active_jobs_block_refresh_and_duplicate_exports(client):
@@ -330,29 +450,21 @@ def test_restart_reconciles_interrupted_job(client):
 
 
 def test_legacy_storage_is_copied_and_paths_are_rewritten(tmp_path, monkeypatch):
-    import sqlite3
-    from contextlib import closing
     import database
 
     legacy = tmp_path / "database" / "storage"
     old_video = legacy / "projects" / "1" / "final-video.mp4"
     old_video.parent.mkdir(parents=True)
     old_video.write_bytes(b"old video")
-    with closing(sqlite3.connect(legacy / "studio.db")) as db:
-        db.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY, video_path TEXT)")
-        db.execute("CREATE TABLE generated_assets (id INTEGER PRIMARY KEY, file_path TEXT)")
-        db.execute("INSERT INTO projects VALUES (1, ?)", (str(old_video),))
-        db.execute("INSERT INTO generated_assets VALUES (1, ?)", (str(old_video),))
-        db.commit()
+    legacy_db = legacy / "studio.db"
+    legacy_db.write_bytes(b"legacy SQLite database backup")
     monkeypatch.setattr(database, "BASE_DIR", tmp_path)
     monkeypatch.setattr(database, "STORAGE_DIR", tmp_path / "storage")
     database.migrate_legacy_storage()
     new_video = tmp_path / "storage" / "projects" / "1" / "final-video.mp4"
     assert new_video.read_bytes() == old_video.read_bytes()
-    with closing(sqlite3.connect(tmp_path / "storage" / "studio.db")) as db:
-        assert db.execute("SELECT video_path FROM projects").fetchone()[0] == str(new_video)
-        assert db.execute("SELECT file_path FROM generated_assets").fetchone()[0] == str(new_video)
     assert old_video.exists()
+    assert legacy_db.read_bytes() == b"legacy SQLite database backup"
 
 
 def test_unsafe_requests_reject_untrusted_browser_origins(client):
@@ -495,7 +607,8 @@ def test_scene_regeneration_and_export_claim_are_serialized(client, monkeypatch)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
     from fastapi import BackgroundTasks
-    from api.routes import generate_scene_image, image_provider, start_video
+    import api.routes
+    from api.routes import generate_scene_image, start_video
     from schemas.schemas import VideoRequest
 
     client, sessions, _ = client
@@ -509,14 +622,14 @@ def test_scene_regeneration_and_export_claim_are_serialized(client, monkeypatch)
     generating = Event()
     release = Event()
     claiming = Event()
-    original = image_provider.generate_scene
+    original = FixtureAIProvider.generate_scene_image
 
-    def blocked_generate(*args, **kwargs):
+    def blocked_generate(self, *args, **kwargs):
         generating.set()
         assert release.wait(5)
-        return original(*args, **kwargs)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(image_provider, "generate_scene", blocked_generate)
+    monkeypatch.setattr(FixtureAIProvider, "generate_scene_image", blocked_generate)
 
     def regenerate():
         with sessions() as db:
@@ -651,6 +764,7 @@ def test_cleanup_skips_files_when_export_starts_after_commit(client, monkeypatch
     scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
     client.post(f"/api/v1/scenes/{scene_id}/generate")
     old_path = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
+    assert old_path.exists()
     original_cleanup = ProjectService._remove_obsolete_media
 
     def claim_then_cleanup(service, project_id, obsolete):
@@ -694,7 +808,7 @@ def test_cleanup_failure_is_logged_after_refresh(client, monkeypatch, caplog):
 def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    from api.routes import generate_portrait, image_provider
+    from api.routes import generate_portrait
     from repositories.project_repository import ProjectRepository
     from services.project_service import ProjectService
     from services.story_service import StoryService
@@ -712,14 +826,14 @@ def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
     story["characters"][0]["description"] = "New description"
     payload = StoryUpdate(**story)
     rendering, release, editing = Event(), Event(), Event()
-    original = image_provider.generate_character
+    original = FixtureAIProvider.generate_character_portrait
 
-    def render(*args, **kwargs):
+    def render(self, *args, **kwargs):
         rendering.set()
         assert release.wait(5)
-        return original(*args, **kwargs)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(image_provider, "generate_character", render)
+    monkeypatch.setattr(FixtureAIProvider, "generate_character_portrait", render)
 
     def portrait():
         with sessions() as db:
@@ -731,7 +845,16 @@ def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
             repository = ProjectRepository(db)
             repository.begin_write()
             project = ProjectService(repository).get(project_id)
-            StoryService(repository).update(project, payload.title, payload.summary, payload.characters, payload.scenes)
+            StoryService(repository).update(
+                project,
+                payload.title,
+                payload.summary,
+                payload.genre,
+                payload.target_audience,
+                payload.three_act_structure,
+                payload.characters,
+                payload.scenes,
+            )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         portrait_future = pool.submit(portrait)

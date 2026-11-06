@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import type { Estimate, PlanName } from "@/services/api";
+import type { Estimate, GenerationEstimate, PlanName } from "@/services/api";
 
 export function Button({
   children,
@@ -60,13 +60,12 @@ export function ProjectLayout({
               ["02", "Story", `/projects/${projectId}/story`],
               ["03", "Characters", `/projects/${projectId}/characters`],
               ["04", "Scenes", `/projects/${projectId}/scenes`],
-              ["05", "Generate", `/projects/${projectId}/generate`],
-              ["06", "Your video", `/projects/${projectId}/video`],
             ].map(([number, label, href]) => (
               <Link className="step-link" href={href} key={number}><span>{number}</span>{label}</Link>
             ))}
+            <Link className="step-link" href="/settings/ai"><span>⚙</span>AI settings</Link>
           </nav>
-          <div className="sidebar-note"><span className="status-dot" />Local prototype <small>No provider charges</small></div>
+          <div className="sidebar-note"><span className="status-dot" />AI planning studio <small>Estimate before every call</small></div>
         </aside>
         <section className="project-content">{children}</section>
       </div>
@@ -93,6 +92,24 @@ export function PageHeading({
   );
 }
 
+export function GenerationEstimateDisclosure({
+  estimate,
+  title,
+}: {
+  estimate: GenerationEstimate;
+  title: string;
+}) {
+  return (
+    <div className="generation-disclosure estimate-detail">
+      <div><span>ESTIMATED COST</span><b>${estimate.estimated_cost.toFixed(4)}</b></div>
+      <div><span>ESTIMATED TIME</span><b>~{estimate.estimated_minutes} min</b></div>
+      <div><span>ESTIMATED API CALLS</span><b>{estimate.estimated_api_calls}</b></div>
+      <div><span>MODEL USAGE</span><b>{estimate.estimated_model_usage}</b></div>
+      <p>{title}. {estimate.notes} Provider billing may differ; requests are not sent until you start generation.</p>
+    </div>
+  );
+}
+
 export function GenerationDisclosure({
   plan,
   estimate,
@@ -110,7 +127,7 @@ export function GenerationDisclosure({
       <div><span>EST. PROVIDER COST</span><b>${estimate.estimated_cost.toFixed(2)}*</b></div>
       <div><span>EST. STORAGE</span><b>{estimate.storage_mb} MB</b></div>
       <div><span>EST. GPU USE</span><b>{estimate.gpu_minutes} min</b></div>
-      <p>*Illustrative estimate only. Placeholder artwork is local and actual provider spend is $0.</p>
+      <p>*Phase 1 export estimate only. AI generation costs are estimated separately; actual provider billing is not reported by this app.</p>
     </div>
   );
 }

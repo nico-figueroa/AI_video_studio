@@ -18,6 +18,7 @@ export default function DashboardPage() {
     <main className="dashboard">
       <header className="workspace-head">
         <Link className="brand" href="/"><span className="brand-mark">✳</span> Framewise</Link>
+        <Link className="nav-link" href="/settings/ai">AI settings <span>↗</span></Link>
         <span className="dashboard-tag"><span className="status-dot" /> CREATOR STUDIO</span>
         <Link className="avatar" href="/">N</Link>
       </header>
@@ -46,7 +47,7 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
-        <footer className="dashboard-footer">LOCAL-FIRST PROTOTYPE <i /> NO REAL MODEL OR BILLING PROVIDER CONNECTED</footer>
+        <footer className="dashboard-footer">POSTGRESQL PROJECT STORAGE <i /> AI CALLS REQUIRE YOUR OPENAI API KEY</footer>
       </div>
     </main>
   );

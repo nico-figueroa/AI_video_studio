@@ -2,43 +2,22 @@
 
 ## Mission
 
-AI Video Studio is an ethical AI-powered video production platform that prioritizes transparency, predictability, and user control.
-
-Unlike existing AI generation platforms that hide resource consumption behind opaque credit systems, AI Video Studio informs users of estimated costs, generation times, resource usage, and quality tradeoffs before execution begins.
-
-The platform enables creators to transform text ideas into video content while maintaining full visibility into:
-
-- Estimated generation cost
-- Estimated completion time
-- Resource consumption
-- Quality options
-- Alternative generation plans
+AI Video Studio is an ethical AI-powered planning and story-generation studio. It turns a creator's idea into editable story, character, and scene bibles, then generates reference portraits and scene images. Cost, time, model usage, and API-call estimates are shown before each provider request.
 
 ## Core Principles
 
-### Transparency First
+- **Transparency first:** Show the estimated cost, duration, model usage, and API calls before generation.
+- **Human in the loop:** Creators can review and edit generated story and planning data before generating images.
+- **Budget protection:** Reserve each displayed estimate against the project's budget before sending provider requests.
+- **No surprise consumption:** Explain that estimates are planning figures and cannot guarantee provider billing or latency.
+- **Separation of concerns:** AI business logic calls a provider interface; only provider implementations call model SDKs.
+- **Local asset ownership:** Generated image files remain in project-scoped local storage, with their paths recorded in PostgreSQL.
 
-Generation never begins before presenting cost and time estimates.
+## Phase 2 Goal
 
-### Human In The Loop
+Support PostgreSQL persistence and Alembic migrations; configurable OpenAI text and image models; Story Bible, Character Bible, and Scene Plan generation; character portraits and scene images; per-operation estimates; and a transparent AI settings experience.
 
-Users can review and modify outputs between stages.
-
-### Resource Awareness
-
-Compute resources should only run when necessary.
-
-### Budget Protection
-
-Generation must never exceed approved budgets.
-
-### Time Protection
-
-Generation workflows should provide expected completion times.
-
-### No Surprise Consumption
-
-The platform must never intentionally obscure resource usage.
+Phase 2 does not add animation, voice, music, or final-video generation. The existing Phase 1 slideshow export is legacy functionality and is not extended by this phase.
 
 ## Target Audience
 
@@ -47,14 +26,3 @@ The platform must never intentionally obscure resource usage.
 - Independent filmmakers
 - Hobbyist storytellers
 - Digital marketing creators
-
-## MVP Goal
-
-Enable users to:
-
-1. Submit a story concept
-2. Generate a storyboard
-3. Estimate cost and time
-4. Generate scene images
-5. Compose a simple video
-6. Download a final MP4

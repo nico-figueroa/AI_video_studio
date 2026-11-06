@@ -1,214 +1,44 @@
-# GitHub Copilot Agent Master Prompt
+# GitHub Copilot Agent Master Prompt — Phase 2
 
-You are building the initial MVP of AI Video Studio.
+Before implementation, read every file under `/docs` and inspect the existing Phase 1 implementation. Follow the scope and contracts in this documentation.
 
-Read all files under /docs before implementation.
+## Mission
 
-Follow the specifications exactly.
+Build an AI-powered planning and story-generation studio that makes cost, time, model usage, and API calls visible before provider requests and preserves user review/editing between stages.
 
----
+## In Scope
 
-# Mission
+- Replace SQLite runtime persistence with PostgreSQL, SQLAlchemy 2.x, and Alembic migrations; document and support importing existing SQLite data.
+- Implement `backend/services/ai/providers/base.py` and `openai_provider.py` with the `AIProvider` operations for story, character bible, scene plan, character portrait, and scene image.
+- Keep every OpenAI SDK call inside provider classes. Services and routes use the abstraction.
+- Use structured/validated JSON for story, character, and scene planning.
+- Persist projects, Story Bibles, Character Bibles, Scene Plans, AI configuration, generation estimates/spend reservations, and generated asset paths.
+- Generate portraits and scene images into local project storage.
+- Add `/settings/ai` and Phase 2 planning/story/character/scene frontend behavior.
+- Show estimates for cost, duration, model usage, and API calls before every generation request; show progress and errors explicitly.
 
-Create a working end-to-end AI video generation prototype emphasizing transparency, predictability, and ethical resource consumption.
+## Technology
 
-The platform must prioritize:
+- Frontend: Next.js App Router, TypeScript, Tailwind CSS.
+- Backend: FastAPI, Pydantic 2, SQLAlchemy 2.x, Alembic.
+- Database: PostgreSQL via `DATABASE_URL`; SQLite only for tests or importing the Phase 1 database.
+- Provider: OpenAI text and image APIs, server-side key in `OPENAI_API_KEY`.
+- Assets: local `backend/storage/projects/{project_id}` paths, recorded in PostgreSQL.
 
-1. Cost visibility
-2. Time visibility
-3. Human review
-4. Modularity
-5. Future scalability
+## Exclusions
 
----
+Do not implement animation, voice, music, Redis/Celery, or new final-video generation. The existing Phase 1 slideshow export may remain unchanged.
 
-# Repository
+## Architecture Constraints
 
-AI_video_studio
+- Routes validate and delegate; services own behavior; repositories own database access.
+- Do not use `metadata.create_all` in application startup; migrate with Alembic.
+- Do not persist or return the OpenAI API key.
+- No request may invoke a provider before its estimate is shown and the user explicitly starts generation.
+- Reserve estimates against project budget before provider calls; report that estimates are not provider quotes.
+- Handle provider failures without returning success-shaped output.
+- Keep frontend API contracts typed and include loading/progress/error states.
 
----
+## Verification
 
-# Technology Stack
-
-Frontend
-
-- Next.js
-- TypeScript
-- Tailwind CSS
-- App Router
-
-Backend
-
-- FastAPI
-- Pydantic
-- SQLAlchemy
-
-Database
-
-- SQLite
-
-Video
-
-- FFmpeg
-
-Image Generation
-
-Provide an abstraction layer.
-
-Initial implementation may use placeholder images or mock services.
-
-The architecture must support future FLUX integration.
-
----
-
-# Required Folder Structure
-
-AI_video_studio
-
-/frontend
-
-/app
-/components
-/services
-
-/backend
-
-/api
-/models
-/schemas
-/services
-/repositories
-
-/database
-
-/workers
-
-/docs
-
-/tests
-
-/scripts
-
----
-
-# Backend Requirements
-
-Implement:
-
-Projects API
-
-Story API
-
-Character API
-
-Scene API
-
-Video API
-
-Metrics API
-
-Health Check API
-
-Use service-oriented architecture.
-
-Controllers must remain thin.
-
-Business logic belongs in services.
-
-Persistence belongs in repositories.
-
----
-
-# Frontend Requirements
-
-Implement routes from:
-
-docs/06_ui_ux_specification.md
-
-Implement responsive layouts.
-
-Use reusable components.
-
-Provide loading states.
-
-Provide progress indicators.
-
-Provide error handling.
-
----
-
-# MVP Workflow
-
-Create Project
-
-↓
-
-Analyze Project
-
-↓
-
-Generate Story Bible
-
-↓
-
-Present Estimates
-
-↓
-
-Select Plan
-
-↓
-
-Generate Placeholder Scene Images
-
-↓
-
-Generate Video
-
-↓
-
-Download Video
-
----
-
-# Architecture Constraints
-
-No hardcoded business logic inside UI components.
-
-No direct database access from routes.
-
-All backend endpoints must have request and response schemas.
-
-All services should support future replacement of generation providers.
-
-Use dependency injection patterns where practical.
-
----
-
-# Non-Functional Requirements
-
-Type-safe frontend.
-
-Typed API responses.
-
-Modular architecture.
-
-Readable code.
-
-Production-grade project structure.
-
-Copilot should generate the complete initial scaffold and all required files.
-
-Prioritize maintainability over optimization.
-
-The result should be runnable locally using:
-
-Backend
-
-uvicorn main:app --reload
-
-Frontend
-
-npm run dev
-
-Generate all code necessary for the initial MVP scaffold.
+Run backend tests, migration checks, frontend `npm run typecheck`, and `npm run build`. Add mocked provider tests; do not make real paid API calls in automated tests. Manually verify PostgreSQL/OpenAI only with developer-owned credentials and approved spending.

@@ -65,7 +65,7 @@ export default function GeneratePage() {
   const steps = ["Story reviewed", "Scene images", "Slideshow export", "MP4 ready"];
   const activeStage = job?.current_stage ?? "Ready when you are";
   return <ProjectLayout projectId={id} title={project?.title ?? "Video generation"}>
-    <PageHeading label="05 / GENERATION" title="Your story, coming together." description="A clear view of each generation stage, with no hidden usage. This prototype runs everything locally." />
+    <PageHeading label="PHASE 1 / LOCAL EXPORT" title="The legacy slideshow export." description="Phase 2 ends with story, character, scene planning, and image assets. This existing local MP4 export is retained from Phase 1 and is not part of Phase 2." />
     {error && <Notice tone="error">{error}</Notice>}
     {!project ? <Loading label="Loading production details…" /> : <>
       <GenerationDisclosure plan={project.selected_plan} estimate={estimate} />
@@ -73,11 +73,11 @@ export default function GeneratePage() {
         <div className="generation-status"><span className={`generation-icon ${job?.status === "completed" ? "done" : ""}`}>{job?.status === "completed" ? "✓" : "✳"}</span><div><div className="eyebrow">{job ? job.status.toUpperCase() : "READY TO EXPORT"}</div><h2>{job?.status === "completed" ? "Video ready" : job?.status === "failed" ? "Export needs attention" : job ? "Making your video." : "Everything is in place."}</h2><p>{job?.current_stage ?? "Your selected plan and storyboard will guide the local MP4 export."}</p></div></div>
         {job && <div className="job-progress"><div className="progress-track"><span style={{ width: `${job.progress}%` }} /></div><b>{job.progress}%</b></div>}
         <div className="pipeline">{steps.map((step, index) => <div className={`pipeline-step ${job && job.progress >= [0, 10, 55, 100][index] ? "pipeline-done" : ""}`} key={step}><span>{job && job.progress >= [0, 10, 55, 100][index] ? "✓" : String(index + 1).padStart(2, "0")}</span><b>{step}</b></div>)}</div>
-        {project.selected_plan && <div className="generation-receipt"><div><span>APPROVED PLAN</span><b>{project.selected_plan}</b></div><div><span>VIDEO LENGTH</span><b>{project.target_minutes} min target</b></div><div><span>ESTIMATED COST</span><b>${estimate?.estimated_cost.toFixed(2) ?? "—"}</b></div><div><span>ACTUAL PROVIDER COST</span><b>$0.00</b></div></div>}
+        {project.selected_plan && <div className="generation-receipt"><div><span>APPROVED PLAN</span><b>{project.selected_plan}</b></div><div><span>VIDEO LENGTH</span><b>{project.target_minutes} min target</b></div><div><span>PHASE 1 EXPORT ESTIMATE</span><b>${estimate?.estimated_cost.toFixed(2) ?? "—"}</b></div><div><span>AI ESTIMATED SPEND</span><b>${project.estimated_spend.toFixed(4)}</b></div></div>}
         {(!job || job.status === "failed") && <Button onClick={start} disabled={busy || recovering || !project.selected_plan}>{busy ? "Preparing export…" : "Start video generation"} <span>→</span></Button>}
         {job?.status === "completed" && <Button href={`/projects/${id}/video`}>Watch your video <span>→</span></Button>}
       </div>
-      <Notice>All costs and GPU minutes on the plan screen are illustrative estimates. This prototype uses local placeholder art and local FFmpeg; actual provider spend is $0.</Notice>
+      <Notice>The Phase 1 slideshow export runs locally. Any OpenAI usage for story or image generation is accounted for in the AI estimate above; actual provider billing is not available from this application.</Notice>
       <div className="workflow-footer"><Button variant="ghost" href={`/projects/${id}/scenes`}>← Review scenes</Button><span>{activeStage}</span></div>
     </>}
   </ProjectLayout>;

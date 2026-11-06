@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/services/api";
 import { Button, Notice } from "@/components/ui";
@@ -14,6 +14,15 @@ export default function NewProjectPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    api.getAISettings()
+      .then((settings) => {
+        setBudget(settings.default_budget);
+        setWait(settings.default_wait_minutes);
+      })
+      .catch((reason: Error) => setError(reason.message));
+  }, []);
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -25,7 +34,6 @@ export default function NewProjectPage() {
         max_budget: budget,
         max_wait_minutes: wait,
       });
-      await api.analyze(project.project_id);
       router.push(`/projects/${project.project_id}/analysis`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create the project.");
@@ -53,9 +61,9 @@ export default function NewProjectPage() {
             <label htmlFor="budget">Max budget <span>USD · ESTIMATE CEILING</span><div className="input-prefix"><i>$</i><input id="budget" type="number" min={0} step={0.25} value={budget} onChange={(event) => setBudget(Number(event.target.value))} /></div></label>
             <label htmlFor="wait">Max wait <span>MINUTES</span><input id="wait" type="number" min={1} max={1440} value={wait} onChange={(event) => setWait(Number(event.target.value))} /></label>
           </div>
-          <Notice>Your story outline and artwork use local placeholders. No paid provider is connected. Review illustrative cost/time/resource estimates before approving image and video generation; actual provider spend is $0.</Notice>
+          <Notice>Creating the project does not call an AI provider. The next page shows the model, estimated cost, duration, and call count before you choose to generate a story bible.</Notice>
           {error && <Notice tone="error">{error}</Notice>}
-          <div className="form-actions"><span>Next: story outline &amp; plan estimates</span><Button type="submit" disabled={busy || prompt.trim().length < 12}>{busy ? "Analyzing your idea…" : "Analyze project"} {!busy && <span>→</span>}</Button></div>
+          <div className="form-actions"><span>Next: review estimate before generation</span><Button type="submit" disabled={busy || prompt.trim().length < 12}>{busy ? "Creating project…" : "Review estimate"} {!busy && <span>→</span>}</Button></div>
         </form>
       </div>
     </main>
