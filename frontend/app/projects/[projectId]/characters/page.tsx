@@ -77,6 +77,9 @@ export default function CharactersPage() {
 
   const remainingBudget = project ? Math.max(0, project.max_budget - project.estimated_spend) : 0;
   const overBudget = estimates ? estimates.character_portrait.estimated_cost > remainingBudget : false;
+  const overWait = project && estimates
+    ? estimates.character_portrait.estimated_minutes > project.max_wait_minutes
+    : false;
 
   return <ProjectLayout projectId={id} title="Character review">
     <PageHeading label="03 / CHARACTER BIBLE" title="Meet the people in your story." description="Review each character bible and generate portraits individually. The estimate below applies to one image request." />
@@ -87,6 +90,7 @@ export default function CharactersPage() {
         title="Estimate per character portrait. Starting a portrait reserves this amount against your project budget."
       />
       {overBudget && <Notice tone="error">A portrait estimate exceeds your remaining ${remainingBudget.toFixed(2)} project budget.</Notice>}
+      {overWait && <Notice tone="error">A portrait estimate exceeds your project wait limit.</Notice>}
       {characters.length === 0 && <Notice>Generate the Story Bible from the planning page before reviewing characters.</Notice>}
       <div className="character-grid">{characters.map((character, index) => <article className="character-card" key={character.id}>
         <div className={`character-art character-art-${index}`} style={character.image_path ? { backgroundImage: `url("${assetUrl(character.image_path)}")` } : undefined}>
@@ -104,10 +108,10 @@ export default function CharactersPage() {
             <dt>Portrait prompt</dt><dd>{character.portrait_prompt || "Uses the character description"}</dd>
           </dl>
           <div className="card-actions">
-            <Button variant="secondary" disabled={overBudget || busyId === character.id} onClick={() => portrait(character)}>
+            <Button variant="secondary" disabled={overBudget || overWait || busyId !== null} onClick={() => portrait(character)}>
               {busyId === character.id ? "Generating portrait…" : character.image_path ? "Regenerate portrait" : "Generate portrait"}
             </Button>
-            <Button variant={character.approved ? "ghost" : "primary"} disabled={busyId === character.id} onClick={() => approve(character)}>
+            <Button variant={character.approved ? "ghost" : "primary"} disabled={busyId !== null} onClick={() => approve(character)}>
               {character.approved ? "✓ Approved" : "Approve"}
             </Button>
           </div>

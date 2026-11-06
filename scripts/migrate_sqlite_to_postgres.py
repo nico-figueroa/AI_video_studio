@@ -29,10 +29,23 @@ def migrate(sqlite_path: Path, database_url: str, storage_dir: Path) -> None:
     target_metadata = MetaData()
     source_metadata.reflect(bind=source_engine)
     target_metadata.reflect(bind=target_engine)
-    tables = [
-        name for name in TABLE_ORDER
-        if name in source_metadata.tables and name in target_metadata.tables
+    source_tables = [name for name in TABLE_ORDER if name in source_metadata.tables]
+    if not source_tables:
+        source_engine.dispose()
+        target_engine.dispose()
+        raise RuntimeError("The SQLite database contains no supported application tables.")
+    missing_target_tables = [
+        name for name in source_tables if name not in target_metadata.tables
     ]
+    if missing_target_tables:
+        source_engine.dispose()
+        target_engine.dispose()
+        raise RuntimeError(
+            "The target database is missing required tables: "
+            + ", ".join(missing_target_tables)
+            + ". Apply database migrations before importing."
+        )
+    tables = source_tables
 
     try:
         with source_engine.connect() as source, target_engine.begin() as target:
@@ -88,6 +101,8 @@ def migrate(sqlite_path: Path, database_url: str, storage_dir: Path) -> None:
 
 
 def _rewrite_asset_path(value: str, storage_dir: Path, sqlite_directory: Path) -> str:
+    if value.startswith(("/storage/", "http://", "https://")):
+        return value
     path = Path(value)
     roots = (storage_dir, sqlite_directory)
     if not path.is_absolute() and "projects" in path.parts:

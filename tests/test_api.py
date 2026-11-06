@@ -195,15 +195,106 @@ def test_health_and_project_planning_flow(client):
             "prompt": "A gardener finds a doorway beneath a glasshouse.",
             "target_minutes": 1,
             "max_budget": 5,
-            "max_wait_minutes": 2,
+            "max_wait_minutes": 3,
         },
     ).json()["project_id"]
     client.post(f"/api/v1/projects/{constrained}/analyze")
     too_slow = client.post(
         f"/api/v1/projects/{constrained}/select-plan",
-        json={"plan": "economy"},
+        json={"plan": "balanced"},
     )
     assert too_slow.status_code == 422
+
+
+def test_planning_and_image_requests_enforce_wait_limits(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    too_short = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+        "max_wait_minutes": 1,
+    }).json()["project_id"]
+    response = client.post(f"/api/v1/projects/{too_short}/analyze")
+    assert response.status_code == 422
+    rejected_project = client.get(f"/api/v1/projects/{too_short}").json()
+    assert rejected_project["estimated_spend"] == 0
+    assert rejected_project["status"] == "created"
+
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+        "max_wait_minutes": 3,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    with sessions() as db:
+        db.get(Project, project_id).max_wait_minutes = 1
+        db.commit()
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
+    scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 422
+    assert client.post(f"/api/v1/scenes/{scene_id}/generate").status_code == 422
+    assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
+
+
+def test_story_edit_schema_matches_database_bounds(client):
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    original = client.get(f"/api/v1/projects/{project_id}/story").json()
+
+    invalid_edits = []
+    character_name = {**original["characters"][0], "name": "C" * 121}
+    invalid_edits.append({**original, "characters": [character_name, *original["characters"][1:]]})
+    scene_title = {**original["scenes"][0], "title": "S" * 161}
+    invalid_edits.append({**original, "scenes": [scene_title, *original["scenes"][1:]]})
+    invalid_duration = {**original["scenes"][0], "estimated_duration": 3601}
+    invalid_edits.append({**original, "scenes": [invalid_duration, *original["scenes"][1:]]})
+
+    for payload in invalid_edits:
+        assert client.put(f"/api/v1/projects/{project_id}/story", json=payload).status_code == 422
+
+
+def test_ai_settings_reject_whitespace_only_model_names(client):
+    client, _, _ = client
+    settings = {
+        "provider": "openai",
+        "model": "gpt-5",
+        "image_model": "gpt-image-1",
+        "default_budget": 5,
+        "default_wait_minutes": 20,
+    }
+    for field in ("model", "image_model"):
+        invalid = {**settings, field: "   "}
+        assert client.put("/api/v1/settings/ai", json=invalid).status_code == 422
+
+
+def test_empty_character_bible_stops_before_scene_plan_call(client, monkeypatch):
+    from schemas.ai_schemas import CharacterBible
+
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    scene_plan_called = []
+    monkeypatch.setattr(
+        FixtureAIProvider,
+        "generate_character_bible",
+        lambda self, story: CharacterBible(characters=[]),
+    )
+    monkeypatch.setattr(
+        FixtureAIProvider,
+        "generate_scene_plan",
+        lambda *args: scene_plan_called.append(True),
+    )
+
+    response = client.post(f"/api/v1/projects/{project_id}/analyze")
+    assert response.status_code == 502
+    assert not scene_plan_called
 
 
 def test_ai_settings_estimates_and_project_budget_defaults(client, monkeypatch):
@@ -310,6 +401,25 @@ def test_interrupted_planning_is_recovered_and_can_be_retried(client):
         assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_complete"
 
 
+def test_interrupted_refresh_with_scenes_retries_as_refresh(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    with sessions() as db:
+        db.get(Project, project_id).status = "planning"
+        db.commit()
+    with TestClient(app) as restarted:
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_failed"
+        assert restarted.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_complete"
+        assert len(restarted.get(f"/api/v1/projects/{project_id}/story").json()["scenes"]) == 4
+
+
 def test_refresh_reservation_uses_visible_planning_estimate(client):
     from models.models import Project
 
@@ -343,18 +453,21 @@ def test_story_edits_synchronize_unchanged_generation_prompts(client):
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     character = story["characters"][0]
     character["name"] = "New Explorer"
+    character["description"] = "A revised character description."
     character["appearance"] = "Silver expedition suit"
     scene = story["scenes"][0]
     scene["title"] = "The New Signal"
+    scene["description"] = "A revised scene description."
     scene["visual_description"] = "A silver diver studies a luminous display."
 
     assert client.put(f"/api/v1/projects/{project_id}/story", json=story).status_code == 200
     saved = client.get(f"/api/v1/projects/{project_id}/story").json()
     assert saved["characters"][0]["portrait_prompt"] == (
-        "New Explorer. Silver expedition suit"
+        "New Explorer A revised character description. Silver expedition suit"
     )
     assert saved["scenes"][0]["image_prompt"] == (
-        "The New Signal. A silver diver studies a luminous display."
+        "The New Signal A revised scene description. "
+        "A silver diver studies a luminous display."
     )
 
 
@@ -446,6 +559,34 @@ def test_active_jobs_block_refresh_and_duplicate_exports(client):
     assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 409
     assert client.post(f"/api/v1/projects/{project_id}/analyze?refresh=true").status_code == 409
     assert len(client.get(f"/api/v1/projects/{project_id}/story").json()["scenes"]) == 4
+
+
+def test_select_plan_locks_project_before_validation(client, monkeypatch):
+    from repositories.project_repository import ProjectRepository
+    from services.project_service import ProjectService
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    events = []
+    lock_project = ProjectRepository.lock_project
+    require_no_active_job = ProjectRepository.require_no_active_job
+
+    def lock_then_record(repository, current_project_id):
+        events.append("lock")
+        return lock_project(repository, current_project_id)
+
+    def check_job_then_record(repository, current_project_id):
+        events.append("check")
+        return require_no_active_job(repository, current_project_id)
+
+    monkeypatch.setattr(ProjectRepository, "lock_project", lock_then_record)
+    monkeypatch.setattr(ProjectRepository, "require_no_active_job", check_job_then_record)
+    with sessions() as db:
+        ProjectService(ProjectRepository(db)).select_plan(project_id, "economy")
+    assert events[:2] == ["lock", "check"]
 
 
 def test_portrait_regeneration_requires_reapproval(client):

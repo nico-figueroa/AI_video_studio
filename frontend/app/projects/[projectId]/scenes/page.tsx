@@ -78,6 +78,9 @@ export default function ScenesPage() {
   const generated = scenes.filter((scene) => scene.image_path).length;
   const remainingBudget = project ? Math.max(0, project.max_budget - project.estimated_spend) : 0;
   const overBudget = estimates ? estimates.scene_image.estimated_cost > remainingBudget : false;
+  const overWait = project && estimates
+    ? estimates.scene_image.estimated_minutes > project.max_wait_minutes
+    : false;
   return <ProjectLayout projectId={id} title="Scene plan">
     <PageHeading label="04 / SCENE PLAN" title="Plan each frame before creating it." description="Review the visual plan and image prompt, then generate or regenerate each scene image with its own visible estimate." />
     {error && <Notice tone="error">{error}</Notice>}
@@ -87,6 +90,7 @@ export default function ScenesPage() {
         title="Estimate per scene image. Starting a request reserves this amount against your project budget."
       />
       {overBudget && <Notice tone="error">A scene image estimate exceeds your remaining ${remainingBudget.toFixed(2)} project budget.</Notice>}
+      {overWait && <Notice tone="error">A scene image estimate exceeds your project wait limit.</Notice>}
       <div className="scene-progress">
         <div><span>STORYBOARD PROGRESS</span><b>{generated} <small>/ {scenes.length} images</small></b></div>
         <div className="progress-track"><span style={{ width: `${scenes.length ? generated / scenes.length * 100 : 0}%` }} /></div>
@@ -106,10 +110,10 @@ export default function ScenesPage() {
             <dt>Image prompt</dt><dd>{scene.image_prompt}</dd>
           </dl>
           <div className="card-actions">
-            <Button variant="secondary" disabled={overBudget || busyId === scene.id} onClick={() => makeImage(scene)}>
+            <Button variant="secondary" disabled={overBudget || overWait || busyId !== null} onClick={() => makeImage(scene)}>
               {busyId === scene.id ? "Generating image…" : scene.image_path ? "Regenerate image" : "Generate image"}
             </Button>
-            {scene.image_path && <Button variant={scene.approved ? "ghost" : "primary"} disabled={busyId === scene.id} onClick={() => approve(scene)}>
+            {scene.image_path && <Button variant={scene.approved ? "ghost" : "primary"} disabled={busyId !== null} onClick={() => approve(scene)}>
               {scene.approved ? "✓ Approved" : "Approve"}
             </Button>}
           </div>

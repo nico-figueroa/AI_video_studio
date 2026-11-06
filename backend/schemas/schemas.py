@@ -54,7 +54,7 @@ class CharacterOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    name: str
+    name: str = Field(min_length=1, max_length=120)
     description: str
     role: str
     personality: str
@@ -75,11 +75,11 @@ class SceneOut(BaseModel):
 
     id: int
     scene_number: int
-    title: str
+    title: str = Field(min_length=1, max_length=160)
     description: str
     visual_description: str
     image_prompt: str
-    estimated_duration: int
+    estimated_duration: int = Field(ge=1, le=3600)
     image_path: str | None
     status: str
     approved: bool
@@ -187,6 +187,8 @@ class AISettingsOut(BaseModel):
 
 
 class AISettingsUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     provider: ProviderName
     model: str = Field(min_length=1, max_length=120)
     image_model: str = Field(min_length=1, max_length=120)

@@ -53,6 +53,19 @@ export default function AnalysisPage() {
       setGenerationEstimates(estimateData);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not generate the story bible.");
+      try {
+        const [projectData, estimateData] = await Promise.all([
+          api.getProject(id),
+          api.getGenerationEstimates(id),
+        ]);
+        setProject(projectData);
+        setGenerationEstimates(estimateData);
+      } catch (refreshReason) {
+        const refreshMessage = refreshReason instanceof Error
+          ? refreshReason.message
+          : "Could not refresh project budget.";
+        setError((message) => `${message} ${refreshMessage}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -69,6 +82,7 @@ export default function AnalysisPage() {
   const isPlanned = story !== null;
   const remainingBudget = Math.max(0, project.max_budget - project.estimated_spend);
   const exceedsBudget = generationEstimates.planning.estimated_cost > remainingBudget;
+  const exceedsWait = generationEstimates.planning.estimated_minutes > project.max_wait_minutes;
 
   return (
     <ProjectLayout projectId={id} title={project.title}>
@@ -107,9 +121,10 @@ export default function AnalysisPage() {
             ))}
           </div>
           {exceedsBudget && <Notice tone="error">This planning estimate exceeds the remaining project budget. Update the budget in AI settings or increase it on a new project.</Notice>}
+          {exceedsWait && <Notice tone="error">This planning estimate exceeds your project wait limit. Increase the limit on a new project to continue.</Notice>}
           <div className="workflow-footer">
             <span>Estimated spend is reserved before provider calls.</span>
-            <Button onClick={generatePlanning} disabled={busy || exceedsBudget}>
+            <Button onClick={generatePlanning} disabled={busy || exceedsBudget || exceedsWait}>
               {busy ? "Generating story, characters, and scenes…" : "Generate Story Bible"}
             </Button>
           </div>

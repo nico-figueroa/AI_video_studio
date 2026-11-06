@@ -48,6 +48,7 @@ python -m uvicorn main:app --reload
 If your terminal is already in `backend`, do not run `Set-Location backend` again; install with `python -m pip install -r requirements.txt`, then run the migration and server commands.
 
 The API is at `http://localhost:8000`; OpenAPI docs are at `/docs`. On startup the app upgrades PostgreSQL to Alembic head and non-destructively copies legacy project media from `backend\database\storage\projects` to `backend\storage\projects`.
+Run only one backend process against a database at a time. Startup marks queued/running exports and projects left in `planning` as interrupted, so starting a second process can invalidate work still running in the first.
 
 ### Frontend
 

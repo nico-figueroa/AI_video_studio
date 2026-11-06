@@ -35,6 +35,7 @@ export default function StoryPage() {
     setError("");
     try {
       await api.saveStory(id, story);
+      setStory(await api.getStory(id));
       setSaved(true);
       if (continueNext) router.push(`/projects/${id}/characters`);
     } catch (reason) {

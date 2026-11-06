@@ -16,9 +16,9 @@ class StoryService:
 
         story = provider.generate_story(project.prompt, project.target_minutes)
         characters = provider.generate_character_bible(story)
-        scene_plan = provider.generate_scene_plan(story, characters, project.target_minutes)
         if not characters.characters:
             raise AIProviderError("The provider returned an empty character bible.")
+        scene_plan = provider.generate_scene_plan(story, characters, project.target_minutes)
         if not 4 <= len(scene_plan.scenes) <= 12:
             raise AIProviderError("The provider must return between 4 and 12 planned scenes.")
 
@@ -111,7 +111,15 @@ class StoryService:
                     setattr(character, field, getattr(item, field))
                 if portrait_details_changed and not portrait_prompt_changed:
                     character.portrait_prompt = (
-                        f"{character.name}. {character.appearance or character.description}"
+                        " ".join(
+                            detail.strip()
+                            for detail in (
+                                character.name,
+                                character.description,
+                                character.appearance,
+                            )
+                            if detail.strip()
+                        )
                     )
 
         existing_scenes = {scene.id: scene for scene in project.scenes}
@@ -137,7 +145,15 @@ class StoryService:
                     setattr(scene, field, getattr(item, field))
                 if image_details_changed and not image_prompt_changed:
                     scene.image_prompt = (
-                        f"{scene.title}. {scene.visual_description or scene.description}"
+                        " ".join(
+                            detail.strip()
+                            for detail in (
+                                scene.title,
+                                scene.description,
+                                scene.visual_description,
+                            )
+                            if detail.strip()
+                        )
                     )
 
         self.repository.save()

@@ -44,7 +44,9 @@ class ProjectService:
         project = self.get(project_id)
         if project.status == "planning":
             raise HTTPException(status_code=409, detail="Story planning is already running for this project.")
-        if project.scenes and not refresh and project.status != "analysis_failed":
+        if project.status == "analysis_failed" and project.scenes:
+            refresh = True
+        if project.scenes and not refresh:
             return project
         if provider is None:
             provider = create_ai_provider(get_ai_configuration(self.repository.db))
@@ -54,6 +56,15 @@ class ProjectService:
         planning_estimate = self.ai_estimation.estimate_all(
             configuration, character_count=character_count, scene_count=scene_count
         )[0]
+        if planning_estimate.estimated_minutes > project.max_wait_minutes:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"This generation is estimated to take "
+                    f"{planning_estimate.estimated_minutes:g} minutes, which exceeds your "
+                    f"{project.max_wait_minutes} minute wait limit."
+                ),
+            )
         previous_status = project.status
         self._reserve_estimated_cost(project, planning_estimate.estimated_cost)
         project.status = "planning"
@@ -138,6 +149,7 @@ class ProjectService:
     def select_plan(self, project_id: int, plan: str, *, commit: bool = True) -> Estimate:
         if commit:
             self.repository.begin_write()
+        self.repository.lock_project(project_id)
         self.repository.require_no_active_job(project_id)
         project = self.get(project_id)
         if not project.estimates:

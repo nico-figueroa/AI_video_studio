@@ -93,6 +93,14 @@ def estimate_project_operation(
 def reserve_estimated_cost(
     project: Project, db: Session, estimate: GenerationEstimate
 ) -> None:
+    if estimate.estimated_minutes > project.max_wait_minutes:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This generation is estimated to take {estimate.estimated_minutes:g} minutes, "
+                f"which exceeds your {project.max_wait_minutes} minute wait limit."
+            ),
+        )
     cost = estimate.estimated_cost
     if project.estimated_spend + cost > project.max_budget:
         raise HTTPException(
