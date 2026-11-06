@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,9 +13,12 @@ from database import STORAGE_DIR, SessionLocal, get_db
 from models.models import Character, Job, Project, Scene
 from repositories.project_repository import ProjectRepository
 from schemas.schemas import (
+    AISettingsOut,
+    AISettingsUpdate,
     CharacterOut,
     CharacterUpdate,
     EstimateComparison,
+    GenerationEstimatesOut,
     JobOut,
     MetricsOut,
     PlanSelected,
@@ -34,6 +38,8 @@ from schemas.schemas import (
     VideoRequest,
 )
 from services.estimation_service import EstimationService
+from services.ai.configuration import create_ai_provider, get_ai_configuration
+from services.ai.estimation_service import AIEstimationService, GenerationEstimate
 from services.image_service import PlaceholderImageProvider, public_asset_url
 from services.project_service import ProjectService
 from services.story_service import StoryService
@@ -41,7 +47,8 @@ from services.video_service import VideoService
 
 
 router = APIRouter(prefix="/api/v1")
-image_provider = PlaceholderImageProvider()
+legacy_video_image_provider = PlaceholderImageProvider()
+image_provider = legacy_video_image_provider
 logger = logging.getLogger(__name__)
 video_composer = VideoService()
 
@@ -66,18 +73,104 @@ def project_summary(project: Project) -> dict[str, object]:
     }
 
 
+def generation_estimates(
+    project: Project, db: Session
+) -> dict[str, GenerationEstimate]:
+    configuration = get_ai_configuration(db)
+    estimator = AIEstimationService()
+    scene_count = len(project.scenes) or estimator.scene_count_for(project.target_minutes)
+    character_count = len(project.characters) or 3
+    estimates = estimator.estimate_all(configuration, character_count, scene_count)
+    return {estimate.operation: estimate for estimate in estimates}
+
+
+def estimate_project_operation(
+    project: Project, db: Session, operation: str
+) -> GenerationEstimate:
+    return generation_estimates(project, db)[operation]
+
+
+def reserve_estimated_cost(
+    project: Project, db: Session, estimate: GenerationEstimate
+) -> None:
+    if estimate.estimated_minutes > project.max_wait_minutes:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This generation is estimated to take {estimate.estimated_minutes:g} minutes, "
+                f"which exceeds your {project.max_wait_minutes} minute wait limit."
+            ),
+        )
+    cost = estimate.estimated_cost
+    reserved_spend = round(project.estimated_spend + cost, 4)
+    if reserved_spend > project.max_budget:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This generation is estimated at ${cost:.4f}, which would exceed the "
+                f"remaining project budget of ${max(0, project.max_budget - project.estimated_spend):.4f}."
+            ),
+        )
+    project.estimated_spend = reserved_spend
+    db.commit()
+
+
+def refund_estimated_cost(project_id: int, db: Session, cost: float) -> None:
+    repository = ProjectRepository(db)
+    if not db.in_transaction():
+        repository.begin_write()
+        repository.lock_project(project_id)
+    project = project_service(db).get(project_id)
+    project.estimated_spend = round(max(0, project.estimated_spend - cost), 4)
+    repository.save()
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/settings/ai", response_model=AISettingsOut)
+def get_ai_settings(db: Session = Depends(get_db)) -> dict[str, object]:
+    configuration = get_ai_configuration(db)
+    db.commit()
+    return {
+        "provider": configuration.provider,
+        "model": configuration.model,
+        "image_model": configuration.image_model,
+        "default_budget": configuration.default_budget,
+        "default_wait_minutes": configuration.default_wait_minutes,
+        "api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+    }
+
+
+@router.put("/settings/ai", response_model=AISettingsOut)
+def update_ai_settings(
+    payload: AISettingsUpdate,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    configuration = get_ai_configuration(db)
+    configuration.provider = payload.provider
+    configuration.model = payload.model.strip()
+    configuration.image_model = payload.image_model.strip()
+    configuration.default_budget = payload.default_budget
+    configuration.default_wait_minutes = payload.default_wait_minutes
+    configuration.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(configuration)
+    return get_ai_settings(db)
+
+
 @router.post("/projects", response_model=ProjectCreated, status_code=201)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> dict[str, object]:
+    configuration = get_ai_configuration(db)
+    values = payload.model_dump()
+    if "max_budget" not in payload.model_fields_set:
+        values["max_budget"] = configuration.default_budget
+    if "max_wait_minutes" not in payload.model_fields_set:
+        values["max_wait_minutes"] = configuration.default_wait_minutes
     project = project_service(db).create(
-        prompt=payload.prompt,
-        target_minutes=payload.target_minutes,
-        max_budget=payload.max_budget,
-        max_wait_minutes=payload.max_wait_minutes,
+        **values,
     )
     return {"project_id": project.id, "status": project.status}
 
@@ -95,8 +188,20 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, obj
         "prompt": project.prompt,
         "max_budget": project.max_budget,
         "max_wait_minutes": project.max_wait_minutes,
+        "estimated_spend": project.estimated_spend,
         "video_url": public_asset_url(Path(project.video_path)) if project.video_path else None,
     }
+
+
+@router.get(
+    "/projects/{project_id}/generation-estimates",
+    response_model=GenerationEstimatesOut,
+)
+def get_generation_estimates(
+    project_id: int, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    project = project_service(db).get(project_id)
+    return generation_estimates(project, db)
 
 
 @router.post("/projects/{project_id}/analyze", response_model=StatusOut)
@@ -135,6 +240,9 @@ def get_story(project_id: int, db: Session = Depends(get_db)) -> dict[str, objec
     return {
         "title": project.title,
         "summary": project.story_summary,
+        "genre": project.genre,
+        "target_audience": project.target_audience,
+        "three_act_structure": project.three_act_structure,
         "characters": project.characters,
         "scenes": sorted(project.scenes, key=lambda scene: scene.scene_number),
     }
@@ -148,10 +256,18 @@ def update_story(
 ) -> dict[str, bool]:
     repository = ProjectRepository(db)
     repository.begin_write()
+    repository.lock_project(project_id)
     repository.require_no_active_job(project_id)
     project = ProjectService(repository).get(project_id)
     StoryService(repository).update(
-        project, payload.title, payload.summary, payload.characters, payload.scenes
+        project,
+        payload.title,
+        payload.summary,
+        payload.genre,
+        payload.target_audience,
+        payload.three_act_structure,
+        payload.characters,
+        payload.scenes,
     )
     return {"updated": True}
 
@@ -175,10 +291,36 @@ def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found.")
     project = project_service(db).get(character.project_id)
-    if not project.selected_plan:
-        raise HTTPException(status_code=409, detail="Choose a production plan before generating portraits.")
+    repository.lock_project(project.id)
+    repository.require_no_active_job(project.id)
+    project = project_service(db).get(project.id)
+    character = repository.get_character(character_id)
+    if character is None or character.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Character not found.")
+    initial_image_path = character.image_path
+    provider = create_ai_provider(get_ai_configuration(db))
+    estimate = estimate_project_operation(project, db, "character_portrait")
+    reserve_estimated_cost(project, db, estimate)
+    repository.begin_write()
+    repository.lock_project(project.id)
+    try:
+        repository.require_no_active_job(project.id)
+    except HTTPException:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise
+    project = project_service(db).get(project.id)
+    character = repository.get_character(character_id)
+    if character is None or character.project_id != project.id:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise HTTPException(status_code=404, detail="Character not found.")
+    if character.image_path and character.image_path != initial_image_path:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        return {"status": "completed"}
     variation = uuid4().hex
-    image = image_provider.generate_character(character, project.id, variation)
+    image = provider.generate_character_portrait(
+        character.portrait_prompt or character.description,
+        STORAGE_DIR / "projects" / str(project.id) / f"character-{character.id}.png",
+    )
     character.image_path = f"{public_asset_url(image)}?v={variation}"
     character.approved = False
     repository.add_asset(project_id=project.id, asset_type="character_image", file_path=str(image))
@@ -192,9 +334,23 @@ def update_character(
     payload: CharacterUpdate,
     db: Session = Depends(get_db),
 ) -> Character:
-    character = ProjectRepository(db).get_character(character_id)
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    character = repository.get_character(character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found.")
+    repository.lock_project(character.project_id)
+    repository.require_no_active_job(character.project_id)
+    character = repository.get_character(character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail="Character not found.")
+    if payload.expected_image_path != character.image_path:
+        raise HTTPException(
+            status_code=409,
+            detail="This character image changed. Refresh the page before updating approval.",
+        )
+    if payload.approved and character.image_path is None:
+        raise HTTPException(status_code=409, detail="Generate a portrait before approving it.")
     character.approved = payload.approved
     db.commit()
     db.refresh(character)
@@ -215,13 +371,42 @@ def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False) -
         raise HTTPException(status_code=404, detail="Scene not found.")
     repository.require_no_active_job(scene.project_id)
     project = ProjectService(repository).get(scene.project_id)
-    if not project.selected_plan:
-        raise HTTPException(status_code=409, detail="Choose a production plan before generating scene images.")
+    repository.lock_project(project.id)
+    repository.require_no_active_job(project.id)
+    project = ProjectService(repository).get(project.id)
+    scene = repository.get_scene(scene_id)
+    if scene is None or scene.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Scene not found.")
     if scene.image_path and not regenerate:
         return
-    variation = uuid4().hex if regenerate else ""
-    image = image_provider.generate_scene(scene, project.id, variation)
-    scene.image_path = f"{public_asset_url(image)}?v={variation}" if variation else public_asset_url(image)
+    initial_image_path = scene.image_path
+    provider = create_ai_provider(get_ai_configuration(db))
+    estimate = estimate_project_operation(project, db, "scene_image")
+    reserve_estimated_cost(project, db, estimate)
+    repository.begin_write()
+    repository.lock_project(project.id)
+    try:
+        repository.require_no_active_job(project.id)
+    except HTTPException:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise
+    project = ProjectService(repository).get(project.id)
+    scene = repository.get_scene(scene_id)
+    if scene is None or scene.project_id != project.id:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        raise HTTPException(status_code=404, detail="Scene not found.")
+    if not regenerate and scene.image_path:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        return
+    if regenerate and scene.image_path and scene.image_path != initial_image_path:
+        refund_estimated_cost(project.id, db, estimate.estimated_cost)
+        return
+    variation = uuid4().hex
+    image = provider.generate_scene_image(
+        scene.image_prompt or scene.visual_description or scene.description,
+        STORAGE_DIR / "projects" / str(project.id) / f"scene-{scene.id}.png",
+    )
+    scene.image_path = f"{public_asset_url(image)}?v={variation}"
     scene.status = "generated"
     scene.approved = False
     repository.add_asset(project_id=project.id, asset_type="scene_image", file_path=str(image))
@@ -246,9 +431,23 @@ def update_scene(
     payload: SceneUpdate,
     db: Session = Depends(get_db),
 ) -> Scene:
-    scene = ProjectRepository(db).get_scene(scene_id)
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    scene = repository.get_scene(scene_id)
     if scene is None:
         raise HTTPException(status_code=404, detail="Scene not found.")
+    repository.lock_project(scene.project_id)
+    repository.require_no_active_job(scene.project_id)
+    scene = repository.get_scene(scene_id)
+    if scene is None:
+        raise HTTPException(status_code=404, detail="Scene not found.")
+    if payload.expected_image_path != scene.image_path:
+        raise HTTPException(
+            status_code=409,
+            detail="This scene image changed. Refresh the page before updating approval.",
+        )
+    if payload.approved and scene.image_path is None:
+        raise HTTPException(status_code=409, detail="Generate a scene image before approving it.")
     scene.approved = payload.approved
     scene.status = "approved" if payload.approved else ("generated" if scene.image_path else "pending")
     db.commit()
@@ -272,7 +471,7 @@ def run_video_job(job_id: str) -> None:
             db.commit()
             for index, scene in enumerate(scenes):
                 if not scene.image_path:
-                    image = image_provider.generate_scene(scene, project.id)
+                    image = legacy_video_image_provider.generate_scene(scene, project.id)
                     scene.image_path = public_asset_url(image)
                     scene.status = "generated"
                     repository.add_asset(project_id=project.id, asset_type="scene_image", file_path=str(image))
@@ -313,7 +512,9 @@ def start_video(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    ProjectRepository(db).begin_write()
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    repository.lock_project(project_id)
     service = project_service(db)
     project = service.get(project_id)
     if project.selected_plan != payload.plan:
@@ -405,6 +606,8 @@ def get_metrics(project_id: int, db: Session = Depends(get_db)) -> dict[str, obj
     return {
         "estimated_cost": estimate.estimated_cost if estimate else 0,
         "actual_cost": project.actual_cost,
+        "estimated_ai_spend": project.estimated_spend,
+        "actual_provider_cost": None,
         "estimated_time": estimate.estimated_minutes if estimate else 0,
         "actual_time": actual_time,
         "total_images": sum(1 for scene in project.scenes if scene.image_path),

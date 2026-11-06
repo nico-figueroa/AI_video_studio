@@ -1,286 +1,71 @@
-# API Contracts
+# API Contracts — Phase 2
 
-Base URL
+Base URL: `/api/v1`
 
-/api/v1
+All payloads are JSON. API-key values are never accepted or returned by these routes; configure `OPENAI_API_KEY` on the backend. Provider errors return a visible `502` (provider failure) or `503` (configuration unavailable). Budget overruns return `422`.
 
----
+## Health
 
-# Health Check
+`GET /health`
 
-GET /health
+```json
+{"status":"ok"}
+```
 
-Response
+## AI Settings
 
-200
+`GET /settings/ai` returns the persisted singleton configuration and a boolean key indicator:
 
+```json
 {
-  "status": "ok"
+  "provider":"openai",
+  "model":"gpt-5",
+  "image_model":"gpt-image-1",
+  "default_budget":5.0,
+  "default_wait_minutes":20,
+  "api_key_configured":false
 }
+```
 
----
+`PUT /settings/ai` accepts `provider`, `model`, `image_model`, `default_budget`, and `default_wait_minutes`; returns the same shape. Only the OpenAI provider is implemented in Phase 2. Saving never starts generation.
 
-# Projects
+## Projects
 
-## Create Project
+- `POST /projects` — create a project without provider calls. Request: `prompt`, optional `target_minutes`, `max_budget`, `max_wait_minutes`. Missing budget/wait use saved AI defaults. Response `201`: `{"project_id":1,"status":"created"}`.
+- `GET /projects` — project summaries.
+- `GET /projects/{projectId}` — project summary, prompt, budget/wait limits, `estimated_spend`, and any legacy Phase 1 `video_url`.
+- `GET /projects/{projectId}/generation-estimates` — return `planning`, `story`, `characters`, `scenes`, `character_portrait`, `scene_image`, and `all_images` estimates. Each has `operation`, `estimated_cost`, `estimated_minutes`, `estimated_model_usage`, `estimated_api_calls`, and an estimate disclaimer.
 
-POST /projects
+## Planning and Story
 
-Request
+- `POST /projects/{projectId}/analyze` — after showing the `planning` estimate, explicitly invoke the three text stages (story, character bible, scene plan). Optional `?refresh=true` regenerates and replaces the planning data. `200`: `{"status":"completed"}`. Estimated spend is reserved against the project budget before provider calls.
+- `GET /projects/{projectId}/story` — title, summary, genre, target audience, three-act structure, full character list, and scene list.
+- `PUT /projects/{projectId}/story` — save edits to those fields and the character/scene fields. Does not call the provider. `200`: `{"updated":true}`.
+- `POST /projects/{projectId}/story/regenerate` — refresh the story, character, and scene bibles; show the planning estimate first.
+- `GET /projects/{projectId}/estimates` — legacy Phase 1 Economy/Balanced/Premium comparison. Its costs are illustrative and are not an OpenAI quote.
 
-{
-  "prompt": "A retired astronaut discovers an underwater civilization.",
-  "target_minutes": 5,
-  "max_budget": 5.00,
-  "max_wait_minutes": 20
-}
+Character response fields include `id`, `name`, `role`, `personality`, `appearance`, `motivations`, `relationships`, `portrait_prompt`, `description`, `image_path`, and `approved`.
 
-Response
+Scene response fields include `id`, `scene_number`, `title`, `description`, `visual_description`, `image_prompt`, `estimated_duration` (seconds), `image_path`, `status`, and `approved`.
 
-201
+## Character Images
 
-{
-  "project_id": 1,
-  "status": "created"
-}
+- `GET /projects/{projectId}/characters` — list persisted character bibles and portrait paths.
+- `POST /characters/{characterId}/portrait` — generate/regenerate one portrait after displaying its `character_portrait` estimate. `200`: `{"status":"completed"}`. Reserves the estimate against the project budget and stores an asset path.
+- `PUT /characters/{characterId}` — approve/unapprove a character; no provider call.
 
----
+## Scene Images
 
-## Get Project
+- `GET /projects/{projectId}/scenes` — list persisted scene plans and image paths.
+- `POST /scenes/{sceneId}/generate` — generate the scene image after displaying its `scene_image` estimate.
+- `POST /scenes/{sceneId}/regenerate` — regenerate that image after displaying the same per-image estimate.
+- Both image endpoints return `200: {"status":"completed"}` and record the local generated asset path.
+- `PUT /scenes/{sceneId}` — approve/unapprove a scene; no provider call.
 
-GET /projects/{projectId}
+## Metrics
 
-Response
+`GET /projects/{projectId}/metrics` returns legacy export estimate/time, local export `actual_cost`, `estimated_ai_spend`, `actual_provider_cost: null` (invoice totals are not available), `actual_time`, image count, and video length when applicable.
 
-200
+## Phase 1 Legacy Video APIs
 
-{
-  "id": 1,
-  "title": "The Forgotten Ocean",
-  "status": "analysis_complete"
-}
-
----
-
-## List Projects
-
-GET /projects
-
-Response
-
-[
-  {
-    "id": 1,
-    "title": "The Forgotten Ocean"
-  }
-]
-
----
-
-# Planning
-
-## Analyze Project
-
-POST /projects/{projectId}/analyze
-
-Purpose
-
-Generate:
-
-- Story Bible
-- Character Bible
-- Scene List
-- Estimates
-
-Response
-
-{
-  "analysis_status": "completed"
-}
-
----
-
-## Retrieve Estimates
-
-GET /projects/{projectId}/estimates
-
-Response
-
-{
-  "economy": {
-    "cost": 0.75,
-    "minutes": 5,
-    "resolution": "720p"
-  },
-  "balanced": {
-    "cost": 2.10,
-    "minutes": 12,
-    "resolution": "1080p"
-  },
-  "premium": {
-    "cost": 4.60,
-    "minutes": 25,
-    "resolution": "1080p_enhanced"
-  }
-}
-
----
-
-# Story
-
-## Get Story
-
-GET /projects/{projectId}/story
-
-Response
-
-{
-  "title": "",
-  "summary": "",
-  "characters": [],
-  "scenes": []
-}
-
----
-
-## Update Story
-
-PUT /projects/{projectId}/story
-
-Request
-
-{
-  "title": "",
-  "summary": "",
-  "characters": [],
-  "scenes": []
-}
-
-Response
-
-{
-  "updated": true
-}
-
----
-
-# Characters
-
-## List Characters
-
-GET /projects/{projectId}/characters
-
-Response
-
-[
-  {
-    "id": 1,
-    "name": "Maya"
-  }
-]
-
----
-
-## Generate Character Portrait
-
-POST /characters/{characterId}/portrait
-
-Response
-
-{
-  "status": "queued"
-}
-
----
-
-# Scenes
-
-## List Scenes
-
-GET /projects/{projectId}/scenes
-
-## Generate Scene
-
-POST /scenes/{sceneId}/generate
-
-Response
-
-{
-  "status": "queued"
-}
-
----
-
-## Regenerate Scene
-
-POST /scenes/{sceneId}/regenerate
-
-Response
-
-{
-  "status": "queued"
-}
-
----
-
-# Video
-
-## Generate Video
-
-POST /projects/{projectId}/video
-
-Request
-
-{
-  "plan": "balanced"
-}
-
-Response
-
-{
-  "job_id": "video-job-001",
-  "status": "running"
-}
-
----
-
-## Video Status
-
-GET /jobs/{jobId}
-
-Response
-
-{
-  "status": "running",
-  "progress": 67,
-  "current_stage": "scene_generation"
-}
-
----
-
-## Download Video
-
-GET /projects/{projectId}/video
-
-Response
-
-{
-  "url": "/storage/video.mp4"
-}
-
----
-
-# Metrics
-
-## Cost Summary
-
-GET /projects/{projectId}/metrics
-
-Response
-
-{
-  "estimated_cost": 2.10,
-  "actual_cost": 1.98,
-  "estimated_time": 12,
-  "actual_time": 10
-}
+The existing video/job endpoints (`POST /projects/{projectId}/video`, `GET /projects/{projectId}/active-job`, `GET /jobs/{jobId}`, `GET /projects/{projectId}/video`, `/video/download`) remain for Phase 1 compatibility. They are not expanded in Phase 2; animation, voice, music, and new final-video generation functionality are out of scope.

@@ -1,123 +1,59 @@
 # System Architecture
 
-## High-Level Architecture
+## Phase 2 Request Flow
 
-User
-↓
-Frontend (Next.js)
-↓
-FastAPI Backend
-↓
-Project Services
-↓
-Generation Workers
-↓
-Storage
-↓
-Final MP4
+```text
+Next.js App Router
+  -> typed API client
+  -> FastAPI routes (/api/v1)
+  -> project / story / AI configuration services
+      -> SQLAlchemy repositories and PostgreSQL
+      -> AI estimation service
+      -> AIProvider interface
+          -> OpenAIProvider (only layer importing/calling the OpenAI SDK)
+  -> local project storage (image files; paths in PostgreSQL)
+```
+
+Routes validate requests and return typed responses. Services own business rules and orchestration. Repositories own persistence. Frontend components never access the database or provider SDKs.
 
 ## Frontend
 
-Technology:
-
-- Next.js
-- TypeScript
-- TailwindCSS
-
-Responsibilities:
-
-- Project management
-- Cost display
-- Progress tracking
-- Scene review
-- Download interface
+- Next.js App Router, TypeScript, and Tailwind CSS.
+- `/settings/ai` manages provider/model defaults and project defaults.
+- Project routes support estimate-first planning, story review, character review, and scene review.
+- Every generation control displays estimated cost, duration, model usage, and calls; loading/progress and provider errors remain visible.
 
 ## Backend
 
-Technology:
+- FastAPI and Pydantic 2 request/response models.
+- SQLAlchemy 2.x and PostgreSQL through `DATABASE_URL`.
+- Alembic migrations run on application startup and can also be run with `alembic upgrade head`.
+- Services: AI configuration, generation estimation, story orchestration, project management, and local image storage.
+- The legacy Phase 1 slideshow export remains present, but Phase 2 adds no animation, voice, music, or final-video behavior.
 
-- FastAPI
-- Python
+## Provider Architecture
 
-Responsibilities:
+`backend/services/ai/providers/base.py` defines `AIProvider`:
 
-- Story generation
-- Project orchestration
-- Estimation engine
-- Job status tracking
+- `generate_story(prompt, target_minutes)`
+- `generate_character_bible(story)`
+- `generate_scene_plan(story, characters, target_minutes)`
+- `generate_character_portrait(prompt, output_path)`
+- `generate_scene_image(prompt, output_path)`
 
-## Storage
+`OpenAIProvider` returns validated Pydantic data for text operations and writes generated image bytes to the supplied project-local path. OpenAI SDK calls are forbidden outside provider classes. Provider choice and model identifiers are persisted as non-secret configuration; `OPENAI_API_KEY` is read only from the backend environment and never returned or stored in PostgreSQL.
 
-Initial MVP:
+## Estimation and Budget Controls
 
-Local filesystem
+The AI estimation service estimates each text stage and each individual image request, including model, token/image usage, cost, duration, and call count. Estimates use configured planning rates (`ESTIMATED_TEXT_USD_PER_1K_TOKENS`, `ESTIMATED_IMAGE_USD_PER_IMAGE`); they are explicitly not provider quotes or guaranteed invoice amounts. Before a call, the backend checks and reserves its estimate against the project budget. The provider invoice is not available from this application.
 
-Future:
+## Data and Media
 
-Cloudflare R2
+- PostgreSQL stores projects, generated bibles, scene plans, estimates, AI configuration, jobs, and generated asset paths.
+- Alembic owns schema creation and changes; application startup must not call `metadata.create_all`.
+- Image assets remain local under `backend/storage/projects/{project_id}`. Static media paths are exposed; database and environment files are not.
+- SQLite migration procedure and rollback safeguards are in [04_database_design.md](./04_database_design.md).
 
-## Database
+## Deferred
 
-Initial MVP:
-
-SQLite
-
-Future:
-
-PostgreSQL
-
-## Job Processing
-
-Initial MVP:
-
-FastAPI Background Tasks
-
-Future:
-
-Redis + Celery
-
-## Generation Components
-
-### Story Generator
-
-Input:
-
-Prompt
-
-Output:
-
-Story Bible
-
-### Estimation Engine
-
-Input:
-
-Story Metadata
-
-Output:
-
-Cost/Time Estimates
-
-### Image Generator
-
-Input:
-
-Scene Descriptions
-
-Output:
-
-Scene Images
-
-### Video Composer
-
-Input:
-
-Scene Images
-
-Output:
-
-MP4 Video
-
-Technology:
-
-FFmpeg
+Distributed workers, cloud object storage, animation, voice/music production, and final video generation are later-phase work. Do not add them in Phase 2.

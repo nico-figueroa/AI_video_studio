@@ -10,6 +10,75 @@ from fastapi.testclient import TestClient
 from main import app
 
 
+class FixtureAIProvider:
+    def generate_story(self, prompt, target_minutes):
+        from schemas.ai_schemas import CharacterSeed, StoryBibleData, ThreeActStructure
+
+        title = "T" * 160 if len(prompt) > 160 else "The Forgotten Ocean"
+        return StoryBibleData(
+            title=title,
+            summary=f"A story shaped by this idea: {prompt}",
+            genre="Adventure",
+            target_audience="General audience",
+            three_act_structure=ThreeActStructure(
+                act_one="The discovery changes the protagonist's plans.",
+                act_two="The journey reveals a hidden conflict.",
+                act_three="A decisive choice changes the future.",
+            ),
+            main_characters=[
+                CharacterSeed(name="The Explorer", role="Protagonist", premise="A curious explorer."),
+                CharacterSeed(name="The Guide", role="Ally", premise="A local guide."),
+                CharacterSeed(name="The Guardian", role="Antagonist", premise="A protector of secrets."),
+            ],
+        )
+
+    def generate_character_bible(self, story):
+        from schemas.ai_schemas import CharacterBible, CharacterBibleData
+
+        return CharacterBible(characters=[
+            CharacterBibleData(
+                name=seed.name,
+                role=seed.role,
+                personality="Curious and determined.",
+                appearance="Distinctive field clothing.",
+                motivations="Discover the truth.",
+                relationships="Connected to the central mystery.",
+                portrait_prompt=f"Portrait of {seed.name}, cinematic and consistent.",
+            )
+            for seed in story.main_characters
+        ])
+
+    def generate_scene_plan(self, story, characters, target_minutes):
+        from schemas.ai_schemas import ScenePlan, ScenePlanData
+
+        titles = ["The Ordinary World", "A Strange Discovery", "Crossing the Threshold", "A New Beginning"]
+        return ScenePlan(scenes=[
+            ScenePlanData(
+                scene_number=index,
+                scene_title=title,
+                scene_description=f"{title} advances the story.",
+                visual_description=f"A cinematic view of {title.lower()}.",
+                image_prompt=f"Create a storyboard frame for {title.lower()}.",
+                estimated_duration=30,
+            )
+            for index, title in enumerate(titles, start=1)
+        ])
+
+    def generate_character_portrait(self, prompt, output_path):
+        from PIL import Image
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64), (60, 90, 70)).save(output_path)
+        return output_path
+
+    def generate_scene_image(self, prompt, output_path):
+        from PIL import Image
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64), (45, 70, 95)).save(output_path)
+        return output_path
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     from database import get_db
@@ -36,6 +105,11 @@ def client(tmp_path, monkeypatch):
     )
     TestingSession = sessionmaker(bind=test_engine, autoflush=False, expire_on_commit=False)
     monkeypatch.setattr(api.routes, "SessionLocal", TestingSession)
+    monkeypatch.setattr(api.routes, "create_ai_provider", lambda configuration: FixtureAIProvider())
+    monkeypatch.setattr(
+        services.project_service, "create_ai_provider",
+        lambda configuration: FixtureAIProvider(),
+    )
     monkeypatch.setattr(main, "engine", test_engine)
     monkeypatch.setattr(main, "migrate_legacy_storage", lambda: None)
 
@@ -80,7 +154,7 @@ def test_health_and_project_planning_flow(client):
     image_without_plan = client.post(
         f"/api/v1/scenes/{story['scenes'][0]['id']}/generate"
     )
-    assert image_without_plan.status_code == 409
+    assert image_without_plan.status_code == 200
     assert client.post(
         f"/api/v1/projects/{project_id}/select-plan",
         json={"plan": "economy"},
@@ -121,15 +195,383 @@ def test_health_and_project_planning_flow(client):
             "prompt": "A gardener finds a doorway beneath a glasshouse.",
             "target_minutes": 1,
             "max_budget": 5,
-            "max_wait_minutes": 2,
+            "max_wait_minutes": 3,
         },
     ).json()["project_id"]
     client.post(f"/api/v1/projects/{constrained}/analyze")
     too_slow = client.post(
         f"/api/v1/projects/{constrained}/select-plan",
-        json={"plan": "economy"},
+        json={"plan": "balanced"},
     )
     assert too_slow.status_code == 422
+
+
+def test_planning_and_image_requests_enforce_wait_limits(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    too_short = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+        "max_wait_minutes": 1,
+    }).json()["project_id"]
+    response = client.post(f"/api/v1/projects/{too_short}/analyze")
+    assert response.status_code == 422
+    rejected_project = client.get(f"/api/v1/projects/{too_short}").json()
+    assert rejected_project["estimated_spend"] == 0
+    assert rejected_project["status"] == "created"
+
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+        "max_wait_minutes": 3,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    with sessions() as db:
+        db.get(Project, project_id).max_wait_minutes = 1
+        db.commit()
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
+    scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 422
+    assert client.post(f"/api/v1/scenes/{scene_id}/generate").status_code == 422
+    assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
+
+
+def test_image_reservation_rounds_cumulative_spend_before_budget_check(client):
+    from api.routes import reserve_estimated_cost
+    from fastapi import HTTPException
+    from models.models import Project
+    from services.ai.estimation_service import GenerationEstimate
+    from services.project_service import ProjectService
+
+    _, sessions, _ = client
+    with sessions() as db:
+        project = Project(
+            prompt="A sufficiently long project prompt.",
+            max_budget=0.179,
+            max_wait_minutes=10,
+            estimated_spend=0.139,
+        )
+        db.add(project)
+        db.commit()
+        reserve_estimated_cost(
+            project,
+            db,
+            GenerationEstimate(
+                operation="scene_image",
+                estimated_cost=0.04,
+                estimated_minutes=1.5,
+                estimated_model_usage="1 image",
+                estimated_api_calls=1,
+                notes="test",
+            ),
+        )
+        db.refresh(project)
+        assert project.estimated_spend == 0.179
+
+    with pytest.raises(HTTPException) as error:
+        ProjectService._reserve_estimated_cost(project, 0.0001)
+    assert error.value.status_code == 422
+
+
+def test_story_edit_schema_matches_database_bounds(client):
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    original = client.get(f"/api/v1/projects/{project_id}/story").json()
+
+    invalid_edits = []
+    character_name = {**original["characters"][0], "name": "C" * 121}
+    invalid_edits.append({**original, "characters": [character_name, *original["characters"][1:]]})
+    scene_title = {**original["scenes"][0], "title": "S" * 161}
+    invalid_edits.append({**original, "scenes": [scene_title, *original["scenes"][1:]]})
+    invalid_duration = {**original["scenes"][0], "estimated_duration": 3601}
+    invalid_edits.append({**original, "scenes": [invalid_duration, *original["scenes"][1:]]})
+
+    for payload in invalid_edits:
+        assert client.put(f"/api/v1/projects/{project_id}/story", json=payload).status_code == 422
+
+
+def test_ai_settings_reject_whitespace_only_model_names(client):
+    client, _, _ = client
+    settings = {
+        "provider": "openai",
+        "model": "gpt-5",
+        "image_model": "gpt-image-1",
+        "default_budget": 5,
+        "default_wait_minutes": 20,
+    }
+    for field in ("model", "image_model"):
+        invalid = {**settings, field: "   "}
+        assert client.put("/api/v1/settings/ai", json=invalid).status_code == 422
+
+
+def test_empty_character_bible_stops_before_scene_plan_call(client, monkeypatch):
+    from schemas.ai_schemas import CharacterBible
+
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    scene_plan_called = []
+    monkeypatch.setattr(
+        FixtureAIProvider,
+        "generate_character_bible",
+        lambda self, story: CharacterBible(characters=[]),
+    )
+    monkeypatch.setattr(
+        FixtureAIProvider,
+        "generate_scene_plan",
+        lambda *args: scene_plan_called.append(True),
+    )
+
+    response = client.post(f"/api/v1/projects/{project_id}/analyze")
+    assert response.status_code == 502
+    assert not scene_plan_called
+
+
+def test_ai_settings_estimates_and_project_budget_defaults(client, monkeypatch):
+    client, _, _ = client
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-returned")
+    settings = client.get("/api/v1/settings/ai").json()
+    assert settings["provider"] == "openai"
+    assert settings["api_key_configured"] is True
+    assert "test-key-not-returned" not in str(settings)
+
+    updated = client.put("/api/v1/settings/ai", json={
+        "provider": "openai",
+        "model": "gpt-5-test",
+        "image_model": "gpt-image-test",
+        "default_budget": 7.5,
+        "default_wait_minutes": 35,
+    })
+    assert updated.status_code == 200
+    assert updated.json()["default_budget"] == 7.5
+
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    project = client.get(f"/api/v1/projects/{project_id}").json()
+    assert project["status"] == "created"
+    assert project["max_budget"] == 7.5
+    assert project["max_wait_minutes"] == 35
+
+    estimates = client.get(
+        f"/api/v1/projects/{project_id}/generation-estimates"
+    ).json()
+    assert set(estimates) == {
+        "planning", "story", "characters", "scenes", "character_portrait",
+        "scene_image", "all_images",
+    }
+    assert estimates["planning"]["estimated_api_calls"] == 3
+    assert "gpt-5-test" in estimates["story"]["estimated_model_usage"]
+    assert estimates["all_images"]["estimated_api_calls"] == 7
+
+    constrained = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 0.001,
+    }).json()["project_id"]
+    rejected = client.post(f"/api/v1/projects/{constrained}/analyze")
+    assert rejected.status_code == 422
+    assert client.get(f"/api/v1/projects/{constrained}").json()["status"] == "created"
+
+
+def test_image_estimates_charge_only_for_image_calls(client, monkeypatch):
+    from types import SimpleNamespace
+    from services.ai.estimation_service import AIEstimationService
+
+    client, _, _ = client
+    monkeypatch.setenv("ESTIMATED_TEXT_USD_PER_1K_TOKENS", "0.002")
+    monkeypatch.setenv("ESTIMATED_IMAGE_USD_PER_IMAGE", "0.04")
+    estimator = AIEstimationService()
+    configuration = SimpleNamespace(model="text-model", image_model="image-model")
+
+    portrait = estimator.estimate("character_portrait", configuration)
+    scene = estimator.estimate("scene_image", configuration)
+    all_images = estimator.estimate(
+        "all_images", configuration, character_count=3, scene_count=4
+    )
+    assert portrait.estimated_cost == 0.04
+    assert scene.estimated_cost == 0.04
+    assert all_images.estimated_cost == 7 * portrait.estimated_cost
+
+
+def test_ai_configuration_concurrent_first_access_is_singleton(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from models.models import AIConfiguration
+    from services.ai.configuration import get_ai_configuration
+
+    _, sessions, _ = client
+    barrier = Barrier(2)
+
+    def initialize():
+        with sessions() as db:
+            barrier.wait()
+            configuration = get_ai_configuration(db)
+            db.commit()
+            return configuration.id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(lambda _: initialize(), range(2))) == [1, 1]
+    with sessions() as db:
+        assert db.query(AIConfiguration).count() == 1
+
+
+def test_interrupted_planning_is_recovered_and_can_be_retried(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    with sessions() as db:
+        db.get(Project, project_id).status = "planning"
+        db.commit()
+    with TestClient(app) as restarted:
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_failed"
+        assert restarted.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_complete"
+
+
+def test_interrupted_refresh_with_scenes_retries_as_refresh(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    with sessions() as db:
+        db.get(Project, project_id).status = "planning"
+        db.commit()
+    with TestClient(app) as restarted:
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_failed"
+        assert restarted.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+        assert restarted.get(f"/api/v1/projects/{project_id}").json()["status"] == "analysis_complete"
+        assert len(restarted.get(f"/api/v1/projects/{project_id}/story").json()["scenes"]) == 4
+
+
+def test_refresh_reservation_uses_visible_planning_estimate(client):
+    from models.models import Project
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    with sessions() as db:
+        project = db.get(Project, project_id)
+        db.delete(project.characters[-1])
+        db.delete(project.scenes[-1])
+        db.commit()
+    planning_estimate = client.get(
+        f"/api/v1/projects/{project_id}/generation-estimates"
+    ).json()["planning"]["estimated_cost"]
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    assert client.post(f"/api/v1/projects/{project_id}/story/regenerate").status_code == 200
+    spend_after = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    assert round(spend_after - spend_before, 4) == planning_estimate
+
+
+def test_story_edits_synchronize_unchanged_generation_prompts(client):
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    story = client.get(f"/api/v1/projects/{project_id}/story").json()
+    character = story["characters"][0]
+    character["name"] = "New Explorer"
+    character["description"] = "A revised character description."
+    character["appearance"] = "Silver expedition suit"
+    scene = story["scenes"][0]
+    scene["title"] = "The New Signal"
+    scene["description"] = "A revised scene description."
+    scene["visual_description"] = "A silver diver studies a luminous display."
+
+    assert client.put(f"/api/v1/projects/{project_id}/story", json=story).status_code == 200
+    saved = client.get(f"/api/v1/projects/{project_id}/story").json()
+    assert saved["characters"][0]["portrait_prompt"] == (
+        "New Explorer A revised character description. Silver expedition suit"
+    )
+    assert saved["scenes"][0]["image_prompt"] == (
+        "The New Signal A revised scene description. "
+        "A silver diver studies a luminous display."
+    )
+
+
+def test_scene_generation_rechecks_and_refunds_duplicate_reservation(client, monkeypatch):
+    from api.routes import generate_scene_image
+    from models.models import Scene
+    import api.routes
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    reserve = api.routes.reserve_estimated_cost
+    provider_calls = []
+
+    def reserve_then_complete_elsewhere(project, db, estimate):
+        reserve(project, db, estimate)
+        with sessions() as other_db:
+            scene = other_db.get(Scene, scene_id)
+            scene.image_path = f"/storage/projects/{project_id}/scene-{scene_id}.png"
+            other_db.commit()
+
+    monkeypatch.setattr(api.routes, "reserve_estimated_cost", reserve_then_complete_elsewhere)
+    monkeypatch.setattr(
+        FixtureAIProvider,
+        "generate_scene_image",
+        lambda *args, **kwargs: provider_calls.append("called"),
+    )
+    with sessions() as db:
+        generate_scene_image(scene_id, db)
+
+    assert provider_calls == []
+    assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
+
+
+def test_portrait_generation_refunds_reservation_if_character_was_deleted(client, monkeypatch):
+    from fastapi import HTTPException
+    from api.routes import generate_portrait
+    from models.models import Character
+    import api.routes
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
+    spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
+    reserve = api.routes.reserve_estimated_cost
+
+    def reserve_then_delete(project, db, estimate):
+        reserve(project, db, estimate)
+        with sessions() as other_db:
+            other_db.delete(other_db.get(Character, character_id))
+            other_db.commit()
+
+    monkeypatch.setattr(api.routes, "reserve_estimated_cost", reserve_then_delete)
+    with sessions() as db, pytest.raises(HTTPException) as error:
+        generate_portrait(character_id, db)
+
+    assert error.value.status_code == 404
+    assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
 
 
 def test_active_jobs_block_refresh_and_duplicate_exports(client):
@@ -156,6 +598,34 @@ def test_active_jobs_block_refresh_and_duplicate_exports(client):
     assert len(client.get(f"/api/v1/projects/{project_id}/story").json()["scenes"]) == 4
 
 
+def test_select_plan_locks_project_before_validation(client, monkeypatch):
+    from repositories.project_repository import ProjectRepository
+    from services.project_service import ProjectService
+
+    client, sessions, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    events = []
+    lock_project = ProjectRepository.lock_project
+    require_no_active_job = ProjectRepository.require_no_active_job
+
+    def lock_then_record(repository, current_project_id):
+        events.append("lock")
+        return lock_project(repository, current_project_id)
+
+    def check_job_then_record(repository, current_project_id):
+        events.append("check")
+        return require_no_active_job(repository, current_project_id)
+
+    monkeypatch.setattr(ProjectRepository, "lock_project", lock_then_record)
+    monkeypatch.setattr(ProjectRepository, "require_no_active_job", check_job_then_record)
+    with sessions() as db:
+        ProjectService(ProjectRepository(db)).select_plan(project_id, "economy")
+    assert events[:2] == ["lock", "check"]
+
+
 def test_portrait_regeneration_requires_reapproval(client):
     client, _, _ = client
     project_id = client.post("/api/v1/projects", json={
@@ -165,9 +635,50 @@ def test_portrait_regeneration_requires_reapproval(client):
     client.post(f"/api/v1/projects/{project_id}/analyze")
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
-    client.put(f"/api/v1/characters/{character_id}", json={"approved": True})
+    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 200
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    assert client.put(
+        f"/api/v1/characters/{character_id}",
+        json={"approved": True, "expected_image_path": character["image_path"]},
+    ).status_code == 200
+    assert client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["approved"]
     assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 200
     assert not client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["approved"]
+
+
+def test_approval_rejects_stale_character_and_scene_image_versions(client):
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]
+    assert client.post(f"/api/v1/characters/{character['id']}/portrait").status_code == 200
+    assert client.post(f"/api/v1/scenes/{scene['id']}/generate").status_code == 200
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]
+
+    stale_character = client.put(
+        f"/api/v1/characters/{character['id']}",
+        json={"approved": True, "expected_image_path": "/old-character.png"},
+    )
+    stale_scene = client.put(
+        f"/api/v1/scenes/{scene['id']}",
+        json={"approved": True, "expected_image_path": "/old-scene.png"},
+    )
+    assert stale_character.status_code == 409
+    assert stale_scene.status_code == 409
+
+    assert client.put(
+        f"/api/v1/characters/{character['id']}",
+        json={"approved": True, "expected_image_path": character["image_path"]},
+    ).status_code == 200
+    assert client.put(
+        f"/api/v1/scenes/{scene['id']}",
+        json={"approved": True, "expected_image_path": scene["image_path"]},
+    ).status_code == 200
 
 
 def test_failed_replacement_preserves_video_and_fractional_durations(client, monkeypatch):
@@ -330,29 +841,21 @@ def test_restart_reconciles_interrupted_job(client):
 
 
 def test_legacy_storage_is_copied_and_paths_are_rewritten(tmp_path, monkeypatch):
-    import sqlite3
-    from contextlib import closing
     import database
 
     legacy = tmp_path / "database" / "storage"
     old_video = legacy / "projects" / "1" / "final-video.mp4"
     old_video.parent.mkdir(parents=True)
     old_video.write_bytes(b"old video")
-    with closing(sqlite3.connect(legacy / "studio.db")) as db:
-        db.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY, video_path TEXT)")
-        db.execute("CREATE TABLE generated_assets (id INTEGER PRIMARY KEY, file_path TEXT)")
-        db.execute("INSERT INTO projects VALUES (1, ?)", (str(old_video),))
-        db.execute("INSERT INTO generated_assets VALUES (1, ?)", (str(old_video),))
-        db.commit()
+    legacy_db = legacy / "studio.db"
+    legacy_db.write_bytes(b"legacy SQLite database backup")
     monkeypatch.setattr(database, "BASE_DIR", tmp_path)
     monkeypatch.setattr(database, "STORAGE_DIR", tmp_path / "storage")
     database.migrate_legacy_storage()
     new_video = tmp_path / "storage" / "projects" / "1" / "final-video.mp4"
     assert new_video.read_bytes() == old_video.read_bytes()
-    with closing(sqlite3.connect(tmp_path / "storage" / "studio.db")) as db:
-        assert db.execute("SELECT video_path FROM projects").fetchone()[0] == str(new_video)
-        assert db.execute("SELECT file_path FROM generated_assets").fetchone()[0] == str(new_video)
     assert old_video.exists()
+    assert legacy_db.read_bytes() == b"legacy SQLite database backup"
 
 
 def test_unsafe_requests_reject_untrusted_browser_origins(client):
@@ -418,10 +921,20 @@ def test_story_edits_invalidate_only_changed_artwork(client):
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     for character in story["characters"][:2]:
         client.post(f"/api/v1/characters/{character['id']}/portrait")
-        client.put(f"/api/v1/characters/{character['id']}", json={"approved": True})
+        updated = client.get(f"/api/v1/projects/{project_id}/characters").json()
+        image_path = next(item["image_path"] for item in updated if item["id"] == character["id"])
+        client.put(
+            f"/api/v1/characters/{character['id']}",
+            json={"approved": True, "expected_image_path": image_path},
+        )
     for scene in story["scenes"][:2]:
         client.post(f"/api/v1/scenes/{scene['id']}/generate")
-        client.put(f"/api/v1/scenes/{scene['id']}", json={"approved": True})
+        updated = client.get(f"/api/v1/projects/{project_id}/scenes").json()
+        image_path = next(item["image_path"] for item in updated if item["id"] == scene["id"])
+        client.put(
+            f"/api/v1/scenes/{scene['id']}",
+            json={"approved": True, "expected_image_path": image_path},
+        )
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     assert client.put(f"/api/v1/projects/{project_id}/story", json=story).status_code == 200
     assert client.get(f"/api/v1/projects/{project_id}/story").json() == story
@@ -495,7 +1008,8 @@ def test_scene_regeneration_and_export_claim_are_serialized(client, monkeypatch)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
     from fastapi import BackgroundTasks
-    from api.routes import generate_scene_image, image_provider, start_video
+    import api.routes
+    from api.routes import generate_scene_image, start_video
     from schemas.schemas import VideoRequest
 
     client, sessions, _ = client
@@ -509,14 +1023,14 @@ def test_scene_regeneration_and_export_claim_are_serialized(client, monkeypatch)
     generating = Event()
     release = Event()
     claiming = Event()
-    original = image_provider.generate_scene
+    original = FixtureAIProvider.generate_scene_image
 
-    def blocked_generate(*args, **kwargs):
+    def blocked_generate(self, *args, **kwargs):
         generating.set()
         assert release.wait(5)
-        return original(*args, **kwargs)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(image_provider, "generate_scene", blocked_generate)
+    monkeypatch.setattr(FixtureAIProvider, "generate_scene_image", blocked_generate)
 
     def regenerate():
         with sessions() as db:
@@ -651,6 +1165,7 @@ def test_cleanup_skips_files_when_export_starts_after_commit(client, monkeypatch
     scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
     client.post(f"/api/v1/scenes/{scene_id}/generate")
     old_path = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
+    assert old_path.exists()
     original_cleanup = ProjectService._remove_obsolete_media
 
     def claim_then_cleanup(service, project_id, obsolete):
@@ -694,7 +1209,7 @@ def test_cleanup_failure_is_logged_after_refresh(client, monkeypatch, caplog):
 def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    from api.routes import generate_portrait, image_provider
+    from api.routes import generate_portrait
     from repositories.project_repository import ProjectRepository
     from services.project_service import ProjectService
     from services.story_service import StoryService
@@ -712,14 +1227,14 @@ def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
     story["characters"][0]["description"] = "New description"
     payload = StoryUpdate(**story)
     rendering, release, editing = Event(), Event(), Event()
-    original = image_provider.generate_character
+    original = FixtureAIProvider.generate_character_portrait
 
-    def render(*args, **kwargs):
+    def render(self, *args, **kwargs):
         rendering.set()
         assert release.wait(5)
-        return original(*args, **kwargs)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(image_provider, "generate_character", render)
+    monkeypatch.setattr(FixtureAIProvider, "generate_character_portrait", render)
 
     def portrait():
         with sessions() as db:
@@ -731,7 +1246,16 @@ def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
             repository = ProjectRepository(db)
             repository.begin_write()
             project = ProjectService(repository).get(project_id)
-            StoryService(repository).update(project, payload.title, payload.summary, payload.characters, payload.scenes)
+            StoryService(repository).update(
+                project,
+                payload.title,
+                payload.summary,
+                payload.genre,
+                payload.target_audience,
+                payload.three_act_structure,
+                payload.characters,
+                payload.scenes,
+            )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         portrait_future = pool.submit(portrait)
