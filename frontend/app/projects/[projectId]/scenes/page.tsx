@@ -69,7 +69,7 @@ export default function ScenesPage() {
     setBusyId(scene.id);
     setError("");
     try {
-      const updated = await api.approveScene(scene.id, !scene.approved);
+      const updated = await api.approveScene(scene.id, !scene.approved, scene.image_path);
       setScenes((items) => items.map((item) => item.id === updated.id ? updated : item));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update scene."); }
     finally { setBusyId(null); }
@@ -84,7 +84,9 @@ export default function ScenesPage() {
   return <ProjectLayout projectId={id} title="Scene plan">
     <PageHeading label="04 / SCENE PLAN" title="Plan each frame before creating it." description="Review the visual plan and image prompt, then generate or regenerate each scene image with its own visible estimate." />
     {error && <Notice tone="error">{error}</Notice>}
-    {loading || !estimates || !project ? <Loading label="Loading scene plan and estimates…" /> : <>
+    {loading ? <Loading label="Loading scene plan and estimates…" /> : !estimates || !project ? <>
+      <Button variant="secondary" onClick={() => window.location.reload()}>Retry loading scenes</Button>
+    </> : <>
       <GenerationEstimateDisclosure
         estimate={estimates.scene_image}
         title="Estimate per scene image. Starting a request reserves this amount against your project budget."

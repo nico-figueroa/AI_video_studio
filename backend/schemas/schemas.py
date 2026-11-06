@@ -68,6 +68,7 @@ class CharacterOut(BaseModel):
 
 class CharacterUpdate(BaseModel):
     approved: bool
+    expected_image_path: str | None
 
 
 class SceneOut(BaseModel):
@@ -87,6 +88,7 @@ class SceneOut(BaseModel):
 
 class SceneUpdate(BaseModel):
     approved: bool
+    expected_image_path: str | None
 
 
 class StoryOut(BaseModel):

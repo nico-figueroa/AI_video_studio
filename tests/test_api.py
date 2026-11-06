@@ -238,6 +238,43 @@ def test_planning_and_image_requests_enforce_wait_limits(client):
     assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
 
 
+def test_image_reservation_rounds_cumulative_spend_before_budget_check(client):
+    from api.routes import reserve_estimated_cost
+    from fastapi import HTTPException
+    from models.models import Project
+    from services.ai.estimation_service import GenerationEstimate
+    from services.project_service import ProjectService
+
+    _, sessions, _ = client
+    with sessions() as db:
+        project = Project(
+            prompt="A sufficiently long project prompt.",
+            max_budget=0.179,
+            max_wait_minutes=10,
+            estimated_spend=0.139,
+        )
+        db.add(project)
+        db.commit()
+        reserve_estimated_cost(
+            project,
+            db,
+            GenerationEstimate(
+                operation="scene_image",
+                estimated_cost=0.04,
+                estimated_minutes=1.5,
+                estimated_model_usage="1 image",
+                estimated_api_calls=1,
+                notes="test",
+            ),
+        )
+        db.refresh(project)
+        assert project.estimated_spend == 0.179
+
+    with pytest.raises(HTTPException) as error:
+        ProjectService._reserve_estimated_cost(project, 0.0001)
+    assert error.value.status_code == 422
+
+
 def test_story_edit_schema_matches_database_bounds(client):
     client, _, _ = client
     project_id = client.post("/api/v1/projects", json={
@@ -598,9 +635,50 @@ def test_portrait_regeneration_requires_reapproval(client):
     client.post(f"/api/v1/projects/{project_id}/analyze")
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
-    client.put(f"/api/v1/characters/{character_id}", json={"approved": True})
+    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 200
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    assert client.put(
+        f"/api/v1/characters/{character_id}",
+        json={"approved": True, "expected_image_path": character["image_path"]},
+    ).status_code == 200
+    assert client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["approved"]
     assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 200
     assert not client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["approved"]
+
+
+def test_approval_rejects_stale_character_and_scene_image_versions(client):
+    client, _, _ = client
+    project_id = client.post("/api/v1/projects", json={
+        "prompt": "A gardener finds a doorway beneath a glasshouse.",
+        "max_budget": 5,
+    }).json()["project_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]
+    assert client.post(f"/api/v1/characters/{character['id']}/portrait").status_code == 200
+    assert client.post(f"/api/v1/scenes/{scene['id']}/generate").status_code == 200
+    character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
+    scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]
+
+    stale_character = client.put(
+        f"/api/v1/characters/{character['id']}",
+        json={"approved": True, "expected_image_path": "/old-character.png"},
+    )
+    stale_scene = client.put(
+        f"/api/v1/scenes/{scene['id']}",
+        json={"approved": True, "expected_image_path": "/old-scene.png"},
+    )
+    assert stale_character.status_code == 409
+    assert stale_scene.status_code == 409
+
+    assert client.put(
+        f"/api/v1/characters/{character['id']}",
+        json={"approved": True, "expected_image_path": character["image_path"]},
+    ).status_code == 200
+    assert client.put(
+        f"/api/v1/scenes/{scene['id']}",
+        json={"approved": True, "expected_image_path": scene["image_path"]},
+    ).status_code == 200
 
 
 def test_failed_replacement_preserves_video_and_fractional_durations(client, monkeypatch):
@@ -843,10 +921,20 @@ def test_story_edits_invalidate_only_changed_artwork(client):
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     for character in story["characters"][:2]:
         client.post(f"/api/v1/characters/{character['id']}/portrait")
-        client.put(f"/api/v1/characters/{character['id']}", json={"approved": True})
+        updated = client.get(f"/api/v1/projects/{project_id}/characters").json()
+        image_path = next(item["image_path"] for item in updated if item["id"] == character["id"])
+        client.put(
+            f"/api/v1/characters/{character['id']}",
+            json={"approved": True, "expected_image_path": image_path},
+        )
     for scene in story["scenes"][:2]:
         client.post(f"/api/v1/scenes/{scene['id']}/generate")
-        client.put(f"/api/v1/scenes/{scene['id']}", json={"approved": True})
+        updated = client.get(f"/api/v1/projects/{project_id}/scenes").json()
+        image_path = next(item["image_path"] for item in updated if item["id"] == scene["id"])
+        client.put(
+            f"/api/v1/scenes/{scene['id']}",
+            json={"approved": True, "expected_image_path": image_path},
+        )
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     assert client.put(f"/api/v1/projects/{project_id}/story", json=story).status_code == 200
     assert client.get(f"/api/v1/projects/{project_id}/story").json() == story

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type AISettings } from "@/services/api";
 import { Button, Loading, Notice } from "@/components/ui";
 
@@ -12,12 +12,21 @@ export default function AISettingsPage() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    api.getAISettings()
-      .then(setSettings)
-      .catch((reason: Error) => setError(reason.message))
-      .finally(() => setLoading(false));
+  const loadSettings = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setSettings(await api.getAISettings());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load AI settings.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,7 +64,9 @@ export default function AISettingsPage() {
         <p className="form-intro">Choose the provider and model defaults used for story planning and image generation. Your API key stays in the server environment and is never stored in the database.</p>
         {error && <Notice tone="error">{error}</Notice>}
         {saved && <Notice tone="success">AI settings saved.</Notice>}
-        {loading || !settings ? <Loading label="Loading AI settings…" /> : (
+        {loading ? <Loading label="Loading AI settings…" /> : !settings ? (
+          <Button variant="secondary" onClick={loadSettings}>Retry loading AI settings</Button>
+        ) : (
           <form className="create-form" onSubmit={save}>
             <label htmlFor="provider">Provider<span>AVAILABLE IN PHASE 2</span>
               <select id="provider" className="text-input" value={settings.provider} onChange={(event) => setSettings({ ...settings, provider: event.target.value as "openai" })}>

@@ -102,7 +102,8 @@ def reserve_estimated_cost(
             ),
         )
     cost = estimate.estimated_cost
-    if project.estimated_spend + cost > project.max_budget:
+    reserved_spend = round(project.estimated_spend + cost, 4)
+    if reserved_spend > project.max_budget:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -110,7 +111,7 @@ def reserve_estimated_cost(
                 f"remaining project budget of ${max(0, project.max_budget - project.estimated_spend):.4f}."
             ),
         )
-    project.estimated_spend = round(project.estimated_spend + cost, 4)
+    project.estimated_spend = reserved_spend
     db.commit()
 
 
@@ -333,9 +334,23 @@ def update_character(
     payload: CharacterUpdate,
     db: Session = Depends(get_db),
 ) -> Character:
-    character = ProjectRepository(db).get_character(character_id)
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    character = repository.get_character(character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found.")
+    repository.lock_project(character.project_id)
+    repository.require_no_active_job(character.project_id)
+    character = repository.get_character(character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail="Character not found.")
+    if payload.expected_image_path != character.image_path:
+        raise HTTPException(
+            status_code=409,
+            detail="This character image changed. Refresh the page before updating approval.",
+        )
+    if payload.approved and character.image_path is None:
+        raise HTTPException(status_code=409, detail="Generate a portrait before approving it.")
     character.approved = payload.approved
     db.commit()
     db.refresh(character)
@@ -416,9 +431,23 @@ def update_scene(
     payload: SceneUpdate,
     db: Session = Depends(get_db),
 ) -> Scene:
-    scene = ProjectRepository(db).get_scene(scene_id)
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    scene = repository.get_scene(scene_id)
     if scene is None:
         raise HTTPException(status_code=404, detail="Scene not found.")
+    repository.lock_project(scene.project_id)
+    repository.require_no_active_job(scene.project_id)
+    scene = repository.get_scene(scene_id)
+    if scene is None:
+        raise HTTPException(status_code=404, detail="Scene not found.")
+    if payload.expected_image_path != scene.image_path:
+        raise HTTPException(
+            status_code=409,
+            detail="This scene image changed. Refresh the page before updating approval.",
+        )
+    if payload.approved and scene.image_path is None:
+        raise HTTPException(status_code=409, detail="Generate a scene image before approving it.")
     scene.approved = payload.approved
     scene.status = "approved" if payload.approved else ("generated" if scene.image_path else "pending")
     db.commit()

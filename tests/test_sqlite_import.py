@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from database import run_migrations
 from scripts.migrate_sqlite_to_postgres import migrate
-from scripts.migrate_sqlite_to_postgres import _rewrite_asset_path
+from scripts.migrate_sqlite_to_postgres import _normalize_datetime, _rewrite_asset_path
 
 
 def test_sqlite_import_preserves_ids_and_rewrites_project_assets(tmp_path):
@@ -75,3 +75,13 @@ def test_sqlite_import_fails_when_destination_tables_are_missing(tmp_path):
 def test_sqlite_import_preserves_public_storage_urls(tmp_path):
     url = "/storage/projects/8/scene-1.png"
     assert _rewrite_asset_path(url, tmp_path / "storage", tmp_path) == url
+
+
+def test_sqlite_import_interprets_naive_timestamps_as_utc():
+    from datetime import datetime, timezone
+    from sqlalchemy import DateTime
+
+    value = datetime(2026, 11, 6, 12, 30)
+    normalized = _normalize_datetime(value, DateTime(timezone=True))
+    assert normalized == value.replace(tzinfo=timezone.utc)
+    assert _normalize_datetime(value, DateTime(timezone=False)) is value

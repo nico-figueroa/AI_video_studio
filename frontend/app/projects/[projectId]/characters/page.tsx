@@ -69,7 +69,11 @@ export default function CharactersPage() {
     setBusyId(character.id);
     setError("");
     try {
-      const updated = await api.approveCharacter(character.id, !character.approved);
+      const updated = await api.approveCharacter(
+        character.id,
+        !character.approved,
+        character.image_path,
+      );
       setCharacters((items) => items.map((item) => item.id === updated.id ? updated : item));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update character."); }
     finally { setBusyId(null); }
@@ -84,7 +88,9 @@ export default function CharactersPage() {
   return <ProjectLayout projectId={id} title="Character review">
     <PageHeading label="03 / CHARACTER BIBLE" title="Meet the people in your story." description="Review each character bible and generate portraits individually. The estimate below applies to one image request." />
     {error && <Notice tone="error">{error}</Notice>}
-    {loading || !estimates || !project ? <Loading label="Loading character bible and estimates…" /> : <>
+    {loading ? <Loading label="Loading character bible and estimates…" /> : !estimates || !project ? <>
+      <Button variant="secondary" onClick={() => window.location.reload()}>Retry loading characters</Button>
+    </> : <>
       <GenerationEstimateDisclosure
         estimate={estimates.character_portrait}
         title="Estimate per character portrait. Starting a portrait reserves this amount against your project budget."
@@ -101,7 +107,8 @@ export default function CharactersPage() {
           <div className="eyebrow">CHARACTER {String(index + 1).padStart(2, "0")} · {character.role || "ROLE"}</div>
           <h3>{character.name}</h3>
           <dl className="character-facts">
-            <dt>Personality</dt><dd>{character.personality || character.description}</dd>
+            <dt>Personality</dt><dd>{character.personality || "Not specified"}</dd>
+            <dt>Description</dt><dd>{character.description}</dd>
             <dt>Appearance</dt><dd>{character.appearance || "Not specified"}</dd>
             <dt>Motivations</dt><dd>{character.motivations || "Not specified"}</dd>
             <dt>Relationships</dt><dd>{character.relationships || "Not specified"}</dd>

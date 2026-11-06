@@ -1,8 +1,9 @@
 import argparse
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 
-from sqlalchemy import Integer, MetaData, create_engine, func, insert, select
+from sqlalchemy import DateTime, Integer, MetaData, create_engine, func, insert, select
 from dotenv import load_dotenv
 
 
@@ -68,6 +69,8 @@ def migrate(sqlite_path: Path, database_url: str, storage_dir: Path) -> None:
                         column: source_row[column]
                         for column in common_columns
                     }
+                    for column, value in row.items():
+                        row[column] = _normalize_datetime(value, target_table.c[column].type)
                     for column in ("video_path", "image_path", "file_path"):
                         value = row.get(column)
                         if value:
@@ -115,6 +118,17 @@ def _rewrite_asset_path(value: str, storage_dir: Path, sqlite_directory: Path) -
             continue
         if "projects" in relative.parts:
             return str(storage_dir / relative)
+    return value
+
+
+def _normalize_datetime(value: object, target_type: object) -> object:
+    if (
+        isinstance(value, datetime)
+        and isinstance(target_type, DateTime)
+        and target_type.timezone
+        and value.tzinfo is None
+    ):
+        return value.replace(tzinfo=timezone.utc)
     return value
 
 

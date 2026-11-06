@@ -120,7 +120,7 @@ export default function AnalysisPage() {
               </div>
             ))}
           </div>
-          {exceedsBudget && <Notice tone="error">This planning estimate exceeds the remaining project budget. Update the budget in AI settings or increase it on a new project.</Notice>}
+          {exceedsBudget && <Notice tone="error">This planning estimate exceeds this project’s budget limit. To use a larger limit, create a new project with a higher budget.</Notice>}
           {exceedsWait && <Notice tone="error">This planning estimate exceeds your project wait limit. Increase the limit on a new project to continue.</Notice>}
           <div className="workflow-footer">
             <span>Estimated spend is reserved before provider calls.</span>

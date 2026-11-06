@@ -190,18 +190,18 @@ export const api = {
     `/characters/${id}/portrait`,
     { method: "POST" },
   ),
-  approveCharacter: (id: number, approved: boolean) => request<Character>(
+  approveCharacter: (id: number, approved: boolean, expectedImagePath: string | null) => request<Character>(
     `/characters/${id}`,
-    { method: "PUT", body: JSON.stringify({ approved }) },
+    { method: "PUT", body: JSON.stringify({ approved, expected_image_path: expectedImagePath }) },
   ),
   getScenes: (id: number) => request<Scene[]>(`/projects/${id}/scenes`),
   generateScene: (id: number, regenerate = false) => request<{ status: string }>(
     `/scenes/${id}/${regenerate ? "regenerate" : "generate"}`,
     { method: "POST" },
   ),
-  approveScene: (id: number, approved: boolean) => request<Scene>(
+  approveScene: (id: number, approved: boolean, expectedImagePath: string | null) => request<Scene>(
     `/scenes/${id}`,
-    { method: "PUT", body: JSON.stringify({ approved }) },
+    { method: "PUT", body: JSON.stringify({ approved, expected_image_path: expectedImagePath }) },
   ),
   startVideo: (id: number, plan: PlanName) => request<{ job_id: string; status: string }>(
     `/projects/${id}/video`,

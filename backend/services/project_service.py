@@ -94,7 +94,8 @@ class ProjectService:
 
     @staticmethod
     def _reserve_estimated_cost(project: Project, cost: float) -> None:
-        if project.estimated_spend + cost > project.max_budget:
+        reserved_spend = round(project.estimated_spend + cost, 4)
+        if reserved_spend > project.max_budget:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -102,7 +103,7 @@ class ProjectService:
                     f"remaining project budget of ${max(0, project.max_budget - project.estimated_spend):.4f}."
                 ),
             )
-        project.estimated_spend = round(project.estimated_spend + cost, 4)
+        project.estimated_spend = reserved_spend
 
     @staticmethod
     def _media_paths(project: Project) -> set[Path]:
