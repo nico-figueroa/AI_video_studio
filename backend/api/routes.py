@@ -4,6 +4,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi.responses import FileResponse
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import STORAGE_DIR, SessionLocal, get_db
@@ -174,6 +177,7 @@ def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[
     variation = uuid4().hex
     image = image_provider.generate_character(character, project.id, variation)
     character.image_path = f"{public_asset_url(image)}?v={variation}"
+    character.approved = False
     repository.add_asset(project_id=project.id, asset_type="character_image", file_path=str(image))
     repository.save()
     return {"status": "completed"}
@@ -313,11 +317,12 @@ def start_video(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
+    db.execute(text("BEGIN IMMEDIATE"))
     service = project_service(db)
     project = service.get(project_id)
     if project.selected_plan != payload.plan:
         raise HTTPException(status_code=409, detail="Select and approve this plan before generating.")
-    service.select_plan(project_id, payload.plan)
+    service.select_plan(project_id, payload.plan, commit=False)
     if not project.scenes:
         raise HTTPException(status_code=409, detail="Analyze the project before generating a video.")
     active_job = (
@@ -328,11 +333,28 @@ def start_video(
     if active_job:
         raise HTTPException(status_code=409, detail="A generation job is already running for this project.")
     job_id = str(uuid4())
-    ProjectRepository(db).create_job(id=job_id, project_id=project_id)
+    db.add(Job(id=job_id, project_id=project_id))
     project.status = "generating"
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if db.query(Job).filter(
+            Job.project_id == project_id, Job.status.in_(["queued", "running"])
+        ).first():
+            raise HTTPException(status_code=409, detail="A generation job is already running for this project.")
+        raise
     background_tasks.add_task(run_video_job, job_id)
     return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/projects/{project_id}/active-job", response_model=JobOut | None)
+def get_active_job(project_id: int, db: Session = Depends(get_db)) -> dict[str, object] | None:
+    project_service(db).get(project_id)
+    job = db.query(Job).filter(
+        Job.project_id == project_id, Job.status.in_(["queued", "running"])
+    ).first()
+    return get_job(job.id, db) if job else None
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
@@ -358,6 +380,14 @@ def get_video(project_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
     if not project.video_path or not Path(project.video_path).exists():
         raise HTTPException(status_code=404, detail="This project does not have an exported video yet.")
     return {"url": public_asset_url(Path(project.video_path))}
+
+
+@router.get("/projects/{project_id}/video/download")
+def download_video(project_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    project = project_service(db).get(project_id)
+    if not project.video_path or not Path(project.video_path).is_file():
+        raise HTTPException(status_code=404, detail="This project does not have an exported video yet.")
+    return FileResponse(project.video_path, media_type="video/mp4", filename=f"project-{project_id}.mp4")
 
 
 @router.get("/projects/{project_id}/metrics", response_model=MetricsOut)

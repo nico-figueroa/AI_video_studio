@@ -25,6 +25,10 @@ python -m uvicorn main:app --reload
 
 The API is at `http://localhost:8000`; interactive API documentation is at `http://localhost:8000/docs`. SQLite data, generated images, and MP4s are stored under `backend\storage`.
 
+On the first start after upgrading, data in the old `backend\database\storage` location is copied to `backend\storage`; the old files are left untouched as a backup. Stop any older backend process before starting the migration. If the new storage directory already exists without a database, move or back it up first so migration cannot overwrite it.
+
+Run only one backend process against a storage directory: exports use in-process background tasks, and startup marks unfinished jobs as failed so they can be retried. Generated project media is served under `/storage/projects`; the SQLite database is not served.
+
 ### Frontend
 
 ```powershell
@@ -43,6 +47,8 @@ Set-Location frontend
 npm run typecheck
 npm run build
 ```
+
+Backend tests use a temporary database and media directory and do not modify the application's storage.
 
 ## Layout
 

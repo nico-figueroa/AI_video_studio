@@ -93,8 +93,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { detail?: string } | null;
-    throw new Error(body?.detail ?? `Request failed (${response.status}).`);
+    const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+    const detail = body?.detail;
+    if (typeof detail === "string") throw new Error(detail);
+    if (Array.isArray(detail)) {
+      const messages = detail.map((item: { loc?: (string | number)[]; msg?: string }) =>
+        `${item.loc?.filter((part) => part !== "body").join(".") || "Request"}: ${item.msg ?? "Invalid value"}`,
+      );
+      throw new Error(messages.join("; "));
+    }
+    throw new Error(`Request failed (${response.status}).`);
   }
   return response.json() as Promise<T>;
 }
@@ -152,5 +160,6 @@ export const api = {
     { method: "POST", body: JSON.stringify({ plan }) },
   ),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
+  getActiveJob: (id: number) => request<Job | null>(`/projects/${id}/active-job`),
   getMetrics: (id: number) => request<Metrics>(`/projects/${id}/metrics`),
 };

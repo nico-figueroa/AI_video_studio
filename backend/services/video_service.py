@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont
@@ -58,9 +59,9 @@ class VideoService:
             self._ensure_thumbnail(scene, project.id, index)
             for index, scene in enumerate(scenes)
         ]
-        output = STORAGE_DIR / "projects" / str(project.id) / "final-video.mp4"
+        output = STORAGE_DIR / "projects" / str(project.id) / f"video-{uuid4().hex}.mp4"
         output.parent.mkdir(parents=True, exist_ok=True)
-        seconds_per_scene = max(1, duration_minutes * 60 // len(images))
+        seconds_per_scene = duration_minutes * 60 / len(images)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", suffix=".txt", delete=False, dir=output.parent
         ) as listing:
@@ -105,6 +106,9 @@ class VideoService:
             )
             if result.returncode:
                 raise RuntimeError(f"FFmpeg video export failed: {result.stderr[-2000:]}")
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            output.unlink(missing_ok=True)
+            raise
         finally:
             listing_path.unlink(missing_ok=True)
         return output

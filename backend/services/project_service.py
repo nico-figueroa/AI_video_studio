@@ -1,6 +1,7 @@
 from fastapi import HTTPException
+from sqlalchemy import text
 
-from models.models import Estimate, Project
+from models.models import Estimate, Job, Project
 from repositories.project_repository import ProjectRepository
 from services.estimation_service import EstimationService
 from services.story_service import StoryService
@@ -21,6 +22,13 @@ class ProjectService:
         return project
 
     def analyze(self, project_id: int, *, refresh: bool = False) -> Project:
+        if refresh:
+            self.repository.db.execute(text("BEGIN IMMEDIATE"))
+            active = self.repository.db.query(Job).filter(
+                Job.project_id == project_id, Job.status.in_(["queued", "running"])
+            ).first()
+            if active:
+                raise HTTPException(status_code=409, detail="A generation job is already running for this project.")
         project = self.get(project_id)
         StoryService(self.repository).analyze(project, refresh=refresh)
         if refresh or not project.estimates:
@@ -30,7 +38,7 @@ class ProjectService:
             self.repository.save()
         return self.get(project_id)
 
-    def select_plan(self, project_id: int, plan: str) -> Estimate:
+    def select_plan(self, project_id: int, plan: str, *, commit: bool = True) -> Estimate:
         project = self.get(project_id)
         if not project.estimates:
             raise HTTPException(status_code=409, detail="Analyze the project before selecting a plan.")
@@ -49,5 +57,6 @@ class ProjectService:
             )
         project.selected_plan = plan
         project.status = "plan_selected"
-        self.repository.save()
+        if commit:
+            self.repository.save()
         return estimate

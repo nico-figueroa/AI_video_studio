@@ -11,26 +11,40 @@ export default function GeneratePage() {
   const [project, setProject] = useState<Project | null>(null);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  const [recovering, setRecovering] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    Promise.all([api.getProject(id), api.getEstimates(id)])
-      .then(([projectData, estimates]) => {
+    setRecovering(true);
+    Promise.all([api.getProject(id), api.getEstimates(id), api.getActiveJob(id)])
+      .then(([projectData, estimates, activeJob]) => {
         setProject(projectData);
+        setJob(activeJob);
         if (projectData.selected_plan) setEstimate(estimates[projectData.selected_plan]);
       })
-      .catch((reason: Error) => setError(reason.message));
+      .catch((reason: Error) => setError(reason.message))
+      .finally(() => setRecovering(false));
   }, [id]);
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
-    const timer = window.setTimeout(() => {
-      api.getJob(job.job_id).then((next) => {
+    let cancelled = false;
+    let timer: number;
+    async function poll() {
+      try {
+        const next = await api.getJob(job!.job_id);
+        if (cancelled) return;
+        setError("");
         setJob(next);
         if (next.status === "completed") router.push(`/projects/${id}/video`);
         if (next.status === "failed") setError(next.error ?? "Video generation failed.");
-      }).catch((reason: Error) => setError(reason.message));
-    }, 1200);
-    return () => window.clearTimeout(timer);
+      } catch (reason) {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : "Could not check export status.");
+        timer = window.setTimeout(poll, 1200);
+      }
+    }
+    timer = window.setTimeout(poll, 1200);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [job, id, router]);
 
   async function start() {
@@ -60,7 +74,7 @@ export default function GeneratePage() {
         {job && <div className="job-progress"><div className="progress-track"><span style={{ width: `${job.progress}%` }} /></div><b>{job.progress}%</b></div>}
         <div className="pipeline">{steps.map((step, index) => <div className={`pipeline-step ${job && job.progress >= [0, 10, 55, 100][index] ? "pipeline-done" : ""}`} key={step}><span>{job && job.progress >= [0, 10, 55, 100][index] ? "✓" : String(index + 1).padStart(2, "0")}</span><b>{step}</b></div>)}</div>
         {project.selected_plan && <div className="generation-receipt"><div><span>APPROVED PLAN</span><b>{project.selected_plan}</b></div><div><span>VIDEO LENGTH</span><b>{project.target_minutes} min target</b></div><div><span>ESTIMATED COST</span><b>${estimate?.estimated_cost.toFixed(2) ?? "—"}</b></div><div><span>ACTUAL PROVIDER COST</span><b>$0.00</b></div></div>}
-        {!job && <Button onClick={start} disabled={busy || !project.selected_plan}>{busy ? "Preparing export…" : "Start video generation"} <span>→</span></Button>}
+        {(!job || job.status === "failed") && <Button onClick={start} disabled={busy || recovering || !project.selected_plan}>{busy ? "Preparing export…" : "Start video generation"} <span>→</span></Button>}
         {job?.status === "completed" && <Button href={`/projects/${id}/video`}>Watch your video <span>→</span></Button>}
       </div>
       <Notice>All costs and GPU minutes on the plan screen are illustrative estimates. This prototype uses local placeholder art and local FFmpeg; actual provider spend is $0.</Notice>

@@ -210,6 +210,7 @@ tempCodeRunnerFile.py
 
 # Local AI Video Studio assets and runtime dependencies
 backend/storage/
+backend/database/storage/
 frontend/node_modules/
 frontend/.next/
 frontend/tsconfig.tsbuildinfo

@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root{--ink:#17231f;--muted:#75817b;--green:#466a54;--green-dark:#304c3b;--mint:#e8eee8;--paper:#f8f8f4;--line:#e4e6df;--cream:#f1f0e9;--orange:#bb7554}
 *{box-sizing:border-box}
