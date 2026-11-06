@@ -29,6 +29,8 @@ On the first start after upgrading, data in the old `backend\database\storage` l
 
 Run only one backend process against a storage directory: exports use in-process background tasks, and startup marks unfinished jobs as failed so they can be retried. Generated project media is served under `/storage/projects`; the SQLite database is not served.
 
+Browser mutation requests must come from an allowed origin. The defaults are the localhost frontend on port 3000 and the backend API documentation on port 8000. Set `STUDIO_FRONTEND_ORIGINS` to a comma-separated list of trusted frontend origins if needed; this also configures CORS. Command-line clients without an `Origin` header remain supported. Bind this local prototype only to trusted interfaces.
+
 ### Frontend
 
 ```powershell

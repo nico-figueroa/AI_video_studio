@@ -4,6 +4,7 @@ from pathlib import Path
 from database import STORAGE_DIR
 from models.models import Character, Project, Scene
 from repositories.project_repository import ProjectRepository
+from schemas.schemas import MAX_STORY_TITLE_LENGTH
 
 
 class StoryService:
@@ -14,7 +15,7 @@ class StoryService:
     def _title(prompt: str) -> str:
         cleaned = re.sub(r"^[\"']|[\"']$", "", prompt.strip())
         words = re.findall(r"[A-Za-z0-9'-]+", cleaned)
-        return " ".join(words[:7]).strip().capitalize() or "An untold story"
+        return " ".join(words[:7]).strip().capitalize()[:MAX_STORY_TITLE_LENGTH] or "An untold story"
 
     def analyze(self, project: Project, *, refresh: bool = False) -> Project:
         if project.scenes and not refresh:
@@ -78,7 +79,6 @@ class StoryService:
                 status="pending",
             ))
 
-        self.repository.save()
         return project
 
     def update(self, project: Project, title: str, summary: str, characters: list, scenes: list) -> None:
@@ -89,6 +89,9 @@ class StoryService:
         for item in characters:
             character = existing_characters.get(item.id)
             if character is not None:
+                if character.name != item.name or character.description != item.description:
+                    character.image_path = None
+                    character.approved = False
                 character.name = item.name
                 character.description = item.description
 
@@ -96,6 +99,10 @@ class StoryService:
         for item in scenes:
             scene = existing_scenes.get(item.id)
             if scene is not None:
+                if scene.title != item.title or scene.description != item.description:
+                    scene.image_path = None
+                    scene.approved = False
+                    scene.status = "pending"
                 scene.title = item.title
                 scene.description = item.description
 

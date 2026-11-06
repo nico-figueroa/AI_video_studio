@@ -1,4 +1,5 @@
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from models.models import Character, Estimate, GeneratedAsset, Job, Project, Scene
@@ -7,6 +8,16 @@ from models.models import Character, Estimate, GeneratedAsset, Job, Project, Sce
 class ProjectRepository:
     def __init__(self, db: Session):
         self.db = db
+
+    def begin_write(self) -> None:
+        self.db.execute(text("BEGIN IMMEDIATE"))
+
+    def require_no_active_job(self, project_id: int) -> None:
+        active = self.db.query(Job).filter(
+            Job.project_id == project_id, Job.status.in_(["queued", "running"])
+        ).first()
+        if active:
+            raise HTTPException(status_code=409, detail="A generation job is already running for this project.")
 
     def create_project(self, **values: object) -> Project:
         project = Project(**values)

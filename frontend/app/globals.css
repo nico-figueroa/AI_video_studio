@@ -8,7 +8,7 @@ button,input,textarea{font:inherit}
 button:disabled{opacity:.55;cursor:not-allowed}
 .brand{font-size:19px;font-weight:700;letter-spacing:-.7px;display:inline-flex;align-items:center;gap:9px}
 .brand-mark{display:grid;place-items:center;background:var(--green);color:white;width:29px;height:29px;border-radius:9px;font-size:17px}
-.eyebrow,.field-label,.table-head,.dashboard-tag,.landing-bottom,.dashboard-footer{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:1.45px;color:#85918a}
+.eyebrow,.field-label,.table-head,.dashboard-tag,.landing-bottom,.dashboard-footer{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:1.45px;color:#5f6b64}
 .status-dot{display:inline-block;width:7px;height:7px;background:#a6c078;border-radius:100%;margin-right:7px;box-shadow:0 0 0 3px #a6c07826}
 .landing{max-width:1440px;margin:0 auto;padding:0 7.3%;min-height:100vh;background:radial-gradient(ellipse at 82% 44%,#e9ede4 0%,#f8f8f4 42%)}
 .landing-nav,.workspace-head{height:82px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e6e8e2}

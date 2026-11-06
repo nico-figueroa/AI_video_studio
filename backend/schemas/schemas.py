@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 PlanName = Literal["economy", "balanced", "premium"]
+MAX_STORY_TITLE_LENGTH = 160
 
 
 class ProjectCreate(BaseModel):
@@ -74,7 +75,7 @@ class StoryOut(BaseModel):
 
 
 class StoryUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=MAX_STORY_TITLE_LENGTH)
     summary: str = Field(min_length=1, max_length=6000)
     characters: list[CharacterOut]
     scenes: list[SceneOut]

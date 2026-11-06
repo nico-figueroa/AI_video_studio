@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -147,8 +146,11 @@ def update_story(
     payload: StoryUpdate,
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    project = project_service(db).get(project_id)
-    StoryService(ProjectRepository(db)).update(
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    repository.require_no_active_job(project_id)
+    project = ProjectService(repository).get(project_id)
+    StoryService(repository).update(
         project, payload.title, payload.summary, payload.characters, payload.scenes
     )
     return {"updated": True}
@@ -204,43 +206,36 @@ def get_scenes(project_id: int, db: Session = Depends(get_db)) -> list[Scene]:
     return sorted(project.scenes, key=lambda scene: scene.scene_number)
 
 
-def generate_scene_image(scene_id: int, regenerate: bool = False) -> None:
-    with SessionLocal() as db:
-        repository = ProjectRepository(db)
-        scene = repository.get_scene(scene_id)
-        if scene is None:
-            return
-        if scene.image_path and not regenerate:
-            return
-        project = project_service(db).get(scene.project_id)
-        variation = uuid4().hex if regenerate else ""
-        image = image_provider.generate_scene(scene, project.id, variation)
-        scene.image_path = f"{public_asset_url(image)}?v={variation}" if variation else public_asset_url(image)
-        scene.status = "generated"
-        scene.approved = False
-        repository.add_asset(project_id=project.id, asset_type="scene_image", file_path=str(image))
-        repository.save()
+def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False) -> None:
+    repository = ProjectRepository(db)
+    repository.begin_write()
+    scene = repository.get_scene(scene_id)
+    if scene is None:
+        raise HTTPException(status_code=404, detail="Scene not found.")
+    repository.require_no_active_job(scene.project_id)
+    project = ProjectService(repository).get(scene.project_id)
+    if not project.selected_plan:
+        raise HTTPException(status_code=409, detail="Choose a production plan before generating scene images.")
+    if scene.image_path and not regenerate:
+        return
+    variation = uuid4().hex if regenerate else ""
+    image = image_provider.generate_scene(scene, project.id, variation)
+    scene.image_path = f"{public_asset_url(image)}?v={variation}" if variation else public_asset_url(image)
+    scene.status = "generated"
+    scene.approved = False
+    repository.add_asset(project_id=project.id, asset_type="scene_image", file_path=str(image))
+    repository.save()
 
 
 @router.post("/scenes/{scene_id}/generate", response_model=StatusOut)
 def generate_scene(scene_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    scene = ProjectRepository(db).get_scene(scene_id)
-    if scene is None:
-        raise HTTPException(status_code=404, detail="Scene not found.")
-    if not project_service(db).get(scene.project_id).selected_plan:
-        raise HTTPException(status_code=409, detail="Choose a production plan before generating scene images.")
-    generate_scene_image(scene_id)
+    generate_scene_image(scene_id, db)
     return {"status": "completed"}
 
 
 @router.post("/scenes/{scene_id}/regenerate", response_model=StatusOut)
 def regenerate_scene(scene_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    scene = ProjectRepository(db).get_scene(scene_id)
-    if scene is None:
-        raise HTTPException(status_code=404, detail="Scene not found.")
-    if not project_service(db).get(scene.project_id).selected_plan:
-        raise HTTPException(status_code=409, detail="Choose a production plan before generating scene images.")
-    generate_scene_image(scene_id, regenerate=True)
+    generate_scene_image(scene_id, db, regenerate=True)
     return {"status": "completed"}
 
 
@@ -317,7 +312,7 @@ def start_video(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    db.execute(text("BEGIN IMMEDIATE"))
+    ProjectRepository(db).begin_write()
     service = project_service(db)
     project = service.get(project_id)
     if project.selected_plan != payload.plan:

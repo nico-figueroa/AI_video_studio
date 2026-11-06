@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
@@ -41,13 +43,32 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+frontend_origins = [
+    origin.strip() for origin in os.getenv(
+        "STUDIO_FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",") if origin.strip()
+]
+trusted_origins = set(frontend_origins) | {"http://localhost:8000", "http://127.0.0.1:8000"}
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def validate_mutation_origin(request: Request, call_next):
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("origin")
+        if (origin is not None and origin not in trusted_origins) or (
+            origin is None and request.headers.get("sec-fetch-site") == "cross-site"
+        ):
+            return JSONResponse(status_code=403, content={"detail": "Request origin is not allowed."})
+    return await call_next(request)
+
+
 app.include_router(router)
 app.mount("/storage/projects", StaticFiles(directory=STORAGE_DIR / "projects", check_dir=False), name="storage")
 
