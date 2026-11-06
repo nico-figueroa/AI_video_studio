@@ -118,7 +118,11 @@ export default function CharactersPage() {
             <Button variant="secondary" disabled={overBudget || overWait || busyId !== null} onClick={() => portrait(character)}>
               {busyId === character.id ? "Generating portrait…" : character.image_path ? "Regenerate portrait" : "Generate portrait"}
             </Button>
-            <Button variant={character.approved ? "ghost" : "primary"} disabled={busyId !== null} onClick={() => approve(character)}>
+            <Button
+              variant={character.approved ? "ghost" : "primary"}
+              disabled={busyId !== null || !character.image_path}
+              onClick={() => approve(character)}
+            >
               {character.approved ? "✓ Approved" : "Approve"}
             </Button>
           </div>
