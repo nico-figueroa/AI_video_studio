@@ -1,5 +1,7 @@
 # AI Video Studio
 
+Phase 3 extends this vision into narrated, image-based MP4 production. See the [production plan](./10_phase_3_implementation_plan.md) and [end-to-end workflow](./11_user_workflow.md). The Phase 2 scope below is historical.
+
 ## Mission
 
 AI Video Studio is an ethical AI-powered planning and story-generation studio. It turns a creator's idea into editable story, character, and scene bibles, then generates reference portraits and scene images. Cost, time, model usage, and API-call estimates are shown before each provider request.

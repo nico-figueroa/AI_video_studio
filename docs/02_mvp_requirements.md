@@ -1,5 +1,7 @@
 # Phase 2 Requirements
 
+Historical Phase 2 requirements. Phase 3 production requirements and exclusions are specified in the [Phase 3 plan](./10_phase_3_implementation_plan.md); narration, standard synthetic speech, timelines, and local narrated MP4 rendering are now supported.
+
 ## Objective
 
 Turn the Phase 1 workflow prototype into a working AI-powered planning and story-generation studio without adding later production stages.

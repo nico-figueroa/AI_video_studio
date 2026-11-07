@@ -42,6 +42,9 @@ def migrate_legacy_storage() -> None:
     """Copy legacy project media, but keep the SQLite database as a backup only."""
     legacy = BASE_DIR / "database" / "storage"
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    marker = STORAGE_DIR / ".legacy-media-imported"
+    if marker.exists():
+        return
     legacy_projects = legacy / "projects"
     if not legacy_projects.is_dir():
         return
@@ -52,6 +55,7 @@ def migrate_legacy_storage() -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.exists():
             shutil.copy2(source, destination)
+    marker.write_text("Legacy media copied. Do not replay after project deletion or restart.\n", encoding="utf-8")
 
 
 def run_migrations(database_engine: Engine = engine) -> None:

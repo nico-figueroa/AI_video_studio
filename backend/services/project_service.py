@@ -46,16 +46,22 @@ class ProjectService:
             raise HTTPException(status_code=409, detail="Story planning is already running for this project.")
         if project.status == "analysis_failed" and project.scenes:
             refresh = True
-        if project.scenes and not refresh:
+        if project.scenes and not refresh and not project.input_manifest:
             return project
-        if provider is None:
-            provider = create_ai_provider(get_ai_configuration(self.repository.db))
         configuration = get_ai_configuration(self.repository.db)
         scene_count = len(project.scenes) or self.ai_estimation.scene_count_for(project.target_minutes)
         character_count = len(project.characters) or 3
         planning_estimate = self.ai_estimation.estimate_all(
             configuration, character_count=character_count, scene_count=scene_count
         )[0]
+        if project.input_manifest:
+            from repositories.production_repository import ProductionRepository
+            from services.input_analysis_service import InputAnalysisService
+            planning_estimate = InputAnalysisService(ProductionRepository(self.repository.db)).planning_estimate(project, configuration)
+            if project.input_manifest.get("source_audio") and not project.input_manifest.get("transcript_words"):
+                raise HTTPException(status_code=409,detail="Transcribe uploaded audio after approving its estimate before planning.")
+        if provider is None and planning_estimate.estimated_api_calls:
+            provider = create_ai_provider(configuration)
         if planning_estimate.estimated_minutes > project.max_wait_minutes:
             raise HTTPException(
                 status_code=422,
@@ -75,7 +81,14 @@ class ProjectService:
             self.repository.require_no_active_job(project_id)
             project = self.get(project_id)
             obsolete = self._media_paths(project) if refresh else set()
-            StoryService(self.repository).analyze(project, provider, refresh=refresh)
+            if project.input_manifest:
+                from repositories.production_repository import ProductionRepository
+                from services.input_analysis_service import InputAnalysisService
+                InputAnalysisService(ProductionRepository(self.repository.db)).generate_missing(project, provider)
+            else:
+                if provider is None:
+                    raise RuntimeError("A provider is required for story planning.")
+                StoryService(self.repository).analyze(project, provider, refresh=refresh)
             if refresh or not project.estimates:
                 project.estimates.clear()
                 for values in self.estimation.calculate(project, len(project.scenes)):

@@ -10,7 +10,25 @@ from fastapi.testclient import TestClient
 from main import app
 
 
+def confirmed_post(http, path, **kwargs):
+    """Explicitly accept review warnings in legacy tests of unrelated behavior."""
+    response = http.post(path, **kwargs)
+    if response.status_code == 409 and isinstance(response.json().get("detail"), dict):
+        detail = response.json()["detail"]
+        assert detail["code"] == "review_required"
+        return http.post(path,headers={"X-Workflow-Override":detail["confirmation_token"]},**kwargs)
+    return response
+
+
 class FixtureAIProvider:
+    def generate_narrative_plan(self, story, characters, target_minutes):
+        return None
+
+    def generate_consistent_image(self, prompt, output_path, references):
+        if output_path.name.startswith("character-"):
+            return self.generate_character_portrait(prompt, output_path)
+        return self.generate_scene_image(prompt, output_path)
+
     def generate_story(self, prompt, target_minutes):
         from schemas.ai_schemas import CharacterSeed, StoryBibleData, ThreeActStructure
 
@@ -151,7 +169,7 @@ def test_health_and_project_planning_flow(client):
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     assert len(story["characters"]) == 3
     assert len(story["scenes"]) == 4
-    image_without_plan = client.post(
+    image_without_plan = confirmed_post(client,
         f"/api/v1/scenes/{story['scenes'][0]['id']}/generate"
     )
     assert image_without_plan.status_code == 200
@@ -159,7 +177,7 @@ def test_health_and_project_planning_flow(client):
         f"/api/v1/projects/{project_id}/select-plan",
         json={"plan": "economy"},
     ).status_code == 200
-    assert client.post(
+    assert confirmed_post(client,
         f"/api/v1/scenes/{story['scenes'][0]['id']}/generate"
     ).status_code == 200
     blocked = client.post(
@@ -233,8 +251,8 @@ def test_planning_and_image_requests_enforce_wait_limits(client):
     spend_before = client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"]
     character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
     scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
-    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 422
-    assert client.post(f"/api/v1/scenes/{scene_id}/generate").status_code == 422
+    assert confirmed_post(client,f"/api/v1/characters/{character_id}/portrait").status_code == 422
+    assert confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate").status_code == 422
     assert client.get(f"/api/v1/projects/{project_id}").json()["estimated_spend"] == spend_before
 
 
@@ -532,6 +550,11 @@ def test_scene_generation_rechecks_and_refunds_duplicate_reservation(client, mon
             other_db.commit()
 
     monkeypatch.setattr(api.routes, "reserve_estimated_cost", reserve_then_complete_elsewhere)
+    with sessions() as db:
+        from models.models import Project
+        for character in db.get(Project,project_id).characters:
+            character.approved = True
+        db.commit()
     monkeypatch.setattr(
         FixtureAIProvider,
         "generate_scene_image",
@@ -567,6 +590,10 @@ def test_portrait_generation_refunds_reservation_if_character_was_deleted(client
             other_db.commit()
 
     monkeypatch.setattr(api.routes, "reserve_estimated_cost", reserve_then_delete)
+    with sessions() as db:
+        from models.models import Project
+        db.get(Project,project_id).story_approved = True
+        db.commit()
     with sessions() as db, pytest.raises(HTTPException) as error:
         generate_portrait(character_id, db)
 
@@ -635,14 +662,14 @@ def test_portrait_regeneration_requires_reapproval(client):
     client.post(f"/api/v1/projects/{project_id}/analyze")
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     character_id = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["id"]
-    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 200
+    assert confirmed_post(client,f"/api/v1/characters/{character_id}/portrait").status_code == 200
     character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
     assert client.put(
         f"/api/v1/characters/{character_id}",
         json={"approved": True, "expected_image_path": character["image_path"]},
     ).status_code == 200
     assert client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["approved"]
-    assert client.post(f"/api/v1/characters/{character_id}/portrait").status_code == 200
+    assert confirmed_post(client,f"/api/v1/characters/{character_id}/portrait").status_code == 200
     assert not client.get(f"/api/v1/projects/{project_id}/characters").json()[0]["approved"]
 
 
@@ -655,8 +682,8 @@ def test_approval_rejects_stale_character_and_scene_image_versions(client):
     assert client.post(f"/api/v1/projects/{project_id}/analyze").status_code == 200
     character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
     scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]
-    assert client.post(f"/api/v1/characters/{character['id']}/portrait").status_code == 200
-    assert client.post(f"/api/v1/scenes/{scene['id']}/generate").status_code == 200
+    assert confirmed_post(client,f"/api/v1/characters/{character['id']}/portrait").status_code == 200
+    assert confirmed_post(client,f"/api/v1/scenes/{scene['id']}/generate").status_code == 200
     character = client.get(f"/api/v1/projects/{project_id}/characters").json()[0]
     scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]
 
@@ -891,7 +918,7 @@ def test_active_jobs_block_story_plan_and_scene_mutations(client, status):
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     scene_id = story["scenes"][0]["id"]
-    assert client.post(f"/api/v1/scenes/{scene_id}/generate").status_code == 200
+    assert confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate").status_code == 200
     image = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
     original_image = image.read_bytes()
     with sessions() as db:
@@ -901,8 +928,8 @@ def test_active_jobs_block_story_plan_and_scene_mutations(client, status):
     story["scenes"][0]["title"] = "Changed while exporting"
     assert client.put(f"/api/v1/projects/{project_id}/story", json=story).status_code == 409
     assert client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "balanced"}).status_code == 409
-    assert client.post(f"/api/v1/scenes/{scene_id}/regenerate").status_code == 409
-    assert client.post(f"/api/v1/scenes/{scene_id}/generate").status_code == 409
+    assert confirmed_post(client,f"/api/v1/scenes/{scene_id}/regenerate").status_code == 409
+    assert confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate").status_code == 409
     assert image.read_bytes() == original_image
     project = client.get(f"/api/v1/projects/{project_id}").json()
     assert project["status"] == "generating"
@@ -920,7 +947,7 @@ def test_story_edits_invalidate_only_changed_artwork(client):
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     for character in story["characters"][:2]:
-        client.post(f"/api/v1/characters/{character['id']}/portrait")
+        confirmed_post(client,f"/api/v1/characters/{character['id']}/portrait")
         updated = client.get(f"/api/v1/projects/{project_id}/characters").json()
         image_path = next(item["image_path"] for item in updated if item["id"] == character["id"])
         client.put(
@@ -928,7 +955,7 @@ def test_story_edits_invalidate_only_changed_artwork(client):
             json={"approved": True, "expected_image_path": image_path},
         )
     for scene in story["scenes"][:2]:
-        client.post(f"/api/v1/scenes/{scene['id']}/generate")
+        confirmed_post(client,f"/api/v1/scenes/{scene['id']}/generate")
         updated = client.get(f"/api/v1/projects/{project_id}/scenes").json()
         image_path = next(item["image_path"] for item in updated if item["id"] == scene["id"])
         client.put(
@@ -1031,6 +1058,11 @@ def test_scene_regeneration_and_export_claim_are_serialized(client, monkeypatch)
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(FixtureAIProvider, "generate_scene_image", blocked_generate)
+    with sessions() as db:
+        from models.models import Project
+        for character in db.get(Project,project_id).characters:
+            character.approved = True
+        db.commit()
 
     def regenerate():
         with sessions() as db:
@@ -1070,8 +1102,8 @@ def test_failed_refresh_preserves_published_media(client, monkeypatch, failure):
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     character_id, scene_id = story["characters"][0]["id"], story["scenes"][0]["id"]
-    client.post(f"/api/v1/characters/{character_id}/portrait")
-    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    confirmed_post(client,f"/api/v1/characters/{character_id}/portrait")
+    confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate")
     directory = storage / "projects" / str(project_id)
     paths = [directory / f"character-{character_id}.png", directory / f"scene-{scene_id}.png", directory / "video.mp4"]
     paths[-1].write_bytes(b"old video")
@@ -1107,8 +1139,8 @@ def test_successful_refresh_removes_obsolete_media(client):
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     story = client.get(f"/api/v1/projects/{project_id}/story").json()
     character_id, scene_id = story["characters"][0]["id"], story["scenes"][0]["id"]
-    client.post(f"/api/v1/characters/{character_id}/portrait")
-    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    confirmed_post(client,f"/api/v1/characters/{character_id}/portrait")
+    confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate")
     directory = storage / "projects" / str(project_id)
     paths = [directory / f"character-{character_id}.png", directory / f"scene-{scene_id}.png", directory / "video.mp4"]
     paths[-1].write_bytes(b"old video")
@@ -1132,7 +1164,7 @@ def test_cleanup_preserves_new_media_published_after_refresh_commit(client, monk
     client.post(f"/api/v1/projects/{project_id}/analyze")
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     old_scene = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
-    client.post(f"/api/v1/scenes/{old_scene}/generate")
+    confirmed_post(client,f"/api/v1/scenes/{old_scene}/generate")
     old_path = storage / "projects" / str(project_id) / f"scene-{old_scene}.png"
     original_cleanup = ProjectService._remove_obsolete_media
 
@@ -1163,7 +1195,7 @@ def test_cleanup_skips_files_when_export_starts_after_commit(client, monkeypatch
     client.post(f"/api/v1/projects/{project_id}/analyze")
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
-    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate")
     old_path = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
     assert old_path.exists()
     original_cleanup = ProjectService._remove_obsolete_media
@@ -1190,7 +1222,7 @@ def test_cleanup_failure_is_logged_after_refresh(client, monkeypatch, caplog):
     client.post(f"/api/v1/projects/{project_id}/analyze")
     client.post(f"/api/v1/projects/{project_id}/select-plan", json={"plan": "economy"})
     scene_id = client.get(f"/api/v1/projects/{project_id}/scenes").json()[0]["id"]
-    client.post(f"/api/v1/scenes/{scene_id}/generate")
+    confirmed_post(client,f"/api/v1/scenes/{scene_id}/generate")
     old_path = storage / "projects" / str(project_id) / f"scene-{scene_id}.png"
     unlink = Path.unlink
 
@@ -1235,6 +1267,10 @@ def test_portrait_generation_is_serialized_with_story_edit(client, monkeypatch):
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(FixtureAIProvider, "generate_character_portrait", render)
+    with sessions() as db:
+        from models.models import Project
+        db.get(Project,project_id).story_approved = True
+        db.commit()
 
     def portrait():
         with sessions() as db:

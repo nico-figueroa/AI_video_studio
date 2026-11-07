@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { WorkflowConfirmation } from "@/components/workflow-confirmation";
 
 export const metadata: Metadata = {
   title: "Framewise — AI Video Studio",
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><WorkflowConfirmation />{children}</body>
     </html>
   );
 }

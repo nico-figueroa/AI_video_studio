@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 from uuid import uuid4
+from typing import Annotated
+import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -27,13 +29,14 @@ from schemas.schemas import (
     ProjectCreated,
     ProjectDetail,
     ProjectSummary,
+    ProjectRestart,
+    DeletionApproval,
     SceneOut,
     SceneUpdate,
     StatusOut,
     StoryOut,
     StoryUpdate,
     StoryUpdated,
-    VideoLink,
     VideoQueued,
     VideoRequest,
 )
@@ -44,6 +47,14 @@ from services.image_service import PlaceholderImageProvider, public_asset_url
 from services.project_service import ProjectService
 from services.story_service import StoryService
 from services.video_service import VideoService
+from schemas.production import ProductionVideo
+from repositories.production_repository import ProductionRepository
+from services.render_service import RenderService
+from services.character_memory_service import CharacterMemoryService
+from services.story_memory_service import StoryMemoryService
+from services.timeline_service import fingerprint
+from services.workflow_service import WorkflowService
+from services.image_asset_service import ImageAssetService
 
 
 router = APIRouter(prefix="/api/v1")
@@ -67,6 +78,7 @@ def project_summary(project: Project) -> dict[str, object]:
         "title": project.title,
         "status": project.status,
         "target_minutes": project.target_minutes,
+        "target_seconds": project.target_seconds,
         "selected_plan": project.selected_plan,
         "created_at": project.created_at,
         "estimated_cost": estimate.estimated_cost if estimate else None,
@@ -81,6 +93,9 @@ def generation_estimates(
     scene_count = len(project.scenes) or estimator.scene_count_for(project.target_minutes)
     character_count = len(project.characters) or 3
     estimates = estimator.estimate_all(configuration, character_count, scene_count)
+    if project.input_manifest:
+        from services.input_analysis_service import InputAnalysisService
+        estimates[0] = InputAnalysisService(ProductionRepository(db)).planning_estimate(project,configuration)
     return {estimate.operation: estimate for estimate in estimates}
 
 
@@ -164,7 +179,7 @@ def update_ai_settings(
 @router.post("/projects", response_model=ProjectCreated, status_code=201)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> dict[str, object]:
     configuration = get_ai_configuration(db)
-    values = payload.model_dump()
+    values = payload.model_dump(exclude={"target_seconds"})
     if "max_budget" not in payload.model_fields_set:
         values["max_budget"] = configuration.default_budget
     if "max_wait_minutes" not in payload.model_fields_set:
@@ -180,6 +195,27 @@ def list_projects(db: Session = Depends(get_db)) -> list[dict[str, object]]:
     return [project_summary(project) for project in ProjectRepository(db).list_projects()]
 
 
+@router.put("/projects/{project_id}/prompt", response_model=StatusOut)
+def restart_project(project_id: int, payload: ProjectRestart, db: Session = Depends(get_db)) -> dict[str, str]:
+    from services.project_lifecycle_service import ProjectLifecycleService
+    ProjectLifecycleService(ProjectRepository(db)).change(project_id, restart=payload)
+    return {"status": "created"}
+
+
+@router.delete("/projects/{project_id}", response_model=StatusOut)
+def delete_project(project_id: int, payload: DeletionApproval, db: Session = Depends(get_db)) -> dict[str, str]:
+    from services.project_lifecycle_service import ProjectLifecycleService
+    ProjectLifecycleService(ProjectRepository(db)).change(project_id)
+    return {"status": "deleted"}
+
+
+@router.delete("/projects/{project_id}/video", response_model=StatusOut)
+def delete_videos(project_id: int, payload: DeletionApproval, db: Session = Depends(get_db)) -> dict[str, str]:
+    from services.project_lifecycle_service import ProjectLifecycleService
+    ProjectLifecycleService(ProjectRepository(db)).change(project_id, videos_only=True)
+    return {"status": "deleted"}
+
+
 @router.get("/projects/{project_id}", response_model=ProjectDetail)
 def get_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
     project = project_service(db).get(project_id)
@@ -190,6 +226,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, obj
         "max_wait_minutes": project.max_wait_minutes,
         "estimated_spend": project.estimated_spend,
         "video_url": public_asset_url(Path(project.video_path)) if project.video_path else None,
+        "render_mode": project.generation_approval.get("render_mode", "local_animation"),
     }
 
 
@@ -199,7 +236,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, obj
 )
 def get_generation_estimates(
     project_id: int, db: Session = Depends(get_db)
-) -> dict[str, object]:
+) -> dict[str, GenerationEstimate]:
     project = project_service(db).get(project_id)
     return generation_estimates(project, db)
 
@@ -253,13 +290,13 @@ def update_story(
     project_id: int,
     payload: StoryUpdate,
     db: Session = Depends(get_db),
-) -> dict[str, bool]:
+) -> StoryUpdated:
     repository = ProjectRepository(db)
     repository.begin_write()
     repository.lock_project(project_id)
     repository.require_no_active_job(project_id)
     project = ProjectService(repository).get(project_id)
-    StoryService(repository).update(
+    revision = StoryService(repository).update(
         project,
         payload.title,
         payload.summary,
@@ -269,7 +306,7 @@ def update_story(
         payload.characters,
         payload.scenes,
     )
-    return {"updated": True}
+    return StoryUpdated(updated=True,revision=revision)
 
 
 @router.post("/projects/{project_id}/story/regenerate", response_model=StatusOut)
@@ -284,7 +321,8 @@ def get_characters(project_id: int, db: Session = Depends(get_db)) -> list[Chara
 
 
 @router.post("/characters/{character_id}/portrait", response_model=StatusOut)
-def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+def generate_portrait(character_id: int, db: Session = Depends(get_db),
+                      review_override: Annotated[str, Header(alias="X-Workflow-Override")] = "") -> dict[str, str]:
     repository = ProjectRepository(db)
     repository.begin_write()
     character = repository.get_character(character_id)
@@ -298,6 +336,8 @@ def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[
     if character is None or character.project_id != project.id:
         raise HTTPException(status_code=404, detail="Character not found.")
     initial_image_path = character.image_path
+    WorkflowService.require_review(project, "story", review_override, record=False)
+    CharacterMemoryService().references(project)
     provider = create_ai_provider(get_ai_configuration(db))
     estimate = estimate_project_operation(project, db, "character_portrait")
     reserve_estimated_cost(project, db, estimate)
@@ -316,14 +356,8 @@ def generate_portrait(character_id: int, db: Session = Depends(get_db)) -> dict[
     if character.image_path and character.image_path != initial_image_path:
         refund_estimated_cost(project.id, db, estimate.estimated_cost)
         return {"status": "completed"}
-    variation = uuid4().hex
-    image = provider.generate_character_portrait(
-        character.portrait_prompt or character.description,
-        STORAGE_DIR / "projects" / str(project.id) / f"character-{character.id}.png",
-    )
-    character.image_path = f"{public_asset_url(image)}?v={variation}"
-    character.approved = False
-    repository.add_asset(project_id=project.id, asset_type="character_image", file_path=str(image))
+    WorkflowService.require_review(project, "story", review_override)
+    ImageAssetService(repository).generate(project, character, provider)
     repository.save()
     return {"status": "completed"}
 
@@ -352,6 +386,8 @@ def update_character(
     if payload.approved and character.image_path is None:
         raise HTTPException(status_code=409, detail="Generate a portrait before approving it.")
     character.approved = payload.approved
+    if payload.approved:
+        CharacterMemoryService().approve_reference(character)
     db.commit()
     db.refresh(character)
     return character
@@ -363,7 +399,7 @@ def get_scenes(project_id: int, db: Session = Depends(get_db)) -> list[Scene]:
     return sorted(project.scenes, key=lambda scene: scene.scene_number)
 
 
-def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False) -> None:
+def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False, review_override: str = "") -> None:
     repository = ProjectRepository(db)
     repository.begin_write()
     scene = repository.get_scene(scene_id)
@@ -380,6 +416,8 @@ def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False) -
     if scene.image_path and not regenerate:
         return
     initial_image_path = scene.image_path
+    WorkflowService.require_review(project, "characters", review_override, record=False)
+    CharacterMemoryService().references(project)
     provider = create_ai_provider(get_ai_configuration(db))
     estimate = estimate_project_operation(project, db, "scene_image")
     reserve_estimated_cost(project, db, estimate)
@@ -401,27 +439,22 @@ def generate_scene_image(scene_id: int, db: Session, regenerate: bool = False) -
     if regenerate and scene.image_path and scene.image_path != initial_image_path:
         refund_estimated_cost(project.id, db, estimate.estimated_cost)
         return
-    variation = uuid4().hex
-    image = provider.generate_scene_image(
-        scene.image_prompt or scene.visual_description or scene.description,
-        STORAGE_DIR / "projects" / str(project.id) / f"scene-{scene.id}.png",
-    )
-    scene.image_path = f"{public_asset_url(image)}?v={variation}"
-    scene.status = "generated"
-    scene.approved = False
-    repository.add_asset(project_id=project.id, asset_type="scene_image", file_path=str(image))
+    WorkflowService.require_review(project, "characters", review_override)
+    ImageAssetService(repository).generate(project, scene, provider)
     repository.save()
 
 
 @router.post("/scenes/{scene_id}/generate", response_model=StatusOut)
-def generate_scene(scene_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    generate_scene_image(scene_id, db)
+def generate_scene(scene_id: int, db: Session = Depends(get_db),
+                   review_override: Annotated[str, Header(alias="X-Workflow-Override")] = "") -> dict[str, str]:
+    generate_scene_image(scene_id, db, review_override=review_override)
     return {"status": "completed"}
 
 
 @router.post("/scenes/{scene_id}/regenerate", response_model=StatusOut)
-def regenerate_scene(scene_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    generate_scene_image(scene_id, db, regenerate=True)
+def regenerate_scene(scene_id: int, db: Session = Depends(get_db),
+                     review_override: Annotated[str, Header(alias="X-Workflow-Override")] = "") -> dict[str, str]:
+    generate_scene_image(scene_id, db, regenerate=True, review_override=review_override)
     return {"status": "completed"}
 
 
@@ -517,6 +550,8 @@ def start_video(
     repository.lock_project(project_id)
     service = project_service(db)
     project = service.get(project_id)
+    if project.generation_approval.get("render_mode") == "local_animation":
+        raise HTTPException(status_code=409, detail="Legacy export cannot execute local animation. Use the approved Render workflow.")
     if project.selected_plan != payload.plan:
         raise HTTPException(status_code=409, detail="Select and approve this plan before generating.")
     service.select_plan(project_id, payload.plan, commit=False)
@@ -566,17 +601,15 @@ def get_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
         "status": job.status,
         "progress": job.progress,
         "current_stage": job.current_stage,
+        "operation": job.operation,
         "error": job.error,
         "video_url": public_asset_url(Path(project.video_path)) if project.video_path else None,
     }
 
 
-@router.get("/projects/{project_id}/video", response_model=VideoLink)
-def get_video(project_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    project = project_service(db).get(project_id)
-    if not project.video_path or not Path(project.video_path).exists():
-        raise HTTPException(status_code=404, detail="This project does not have an exported video yet.")
-    return {"url": public_asset_url(Path(project.video_path))}
+@router.get("/projects/{project_id}/video", response_model=ProductionVideo)
+def get_video(project_id: int, db: Session = Depends(get_db)) -> ProductionVideo:
+    return RenderService(ProductionRepository(db)).video(project_id)
 
 
 @router.get("/projects/{project_id}/video/download")
@@ -603,6 +636,9 @@ def get_metrics(project_id: int, db: Session = Depends(get_db)) -> dict[str, obj
                 0,
                 round((latest.completed_at - latest.started_at).total_seconds() / 60),
             )
+    published = ProductionRepository(db).latest_video(project_id)
+    if published is not None and published.file_path == project.video_path:
+        actual_time = round(published.generation_seconds / 60)
     return {
         "estimated_cost": estimate.estimated_cost if estimate else 0,
         "actual_cost": project.actual_cost,
@@ -611,5 +647,8 @@ def get_metrics(project_id: int, db: Session = Depends(get_db)) -> dict[str, obj
         "estimated_time": estimate.estimated_minutes if estimate else 0,
         "actual_time": actual_time,
         "total_images": sum(1 for scene in project.scenes if scene.image_path),
-        "video_length_seconds": project.target_minutes * 60 if project.video_path else None,
+        "video_length_seconds": (
+            published.duration_seconds if published and published.file_path == project.video_path
+            else project.target_minutes * 60 if project.video_path else None
+        ),
     }

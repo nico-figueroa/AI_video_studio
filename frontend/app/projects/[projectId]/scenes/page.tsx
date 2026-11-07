@@ -17,6 +17,7 @@ import {
   PageHeading,
   ProjectLayout,
 } from "@/components/ui";
+import { StageGeneration } from "@/components/stage-generation";
 
 export default function ScenesPage() {
   const id = Number(useParams<{ projectId: string }>().projectId);
@@ -26,6 +27,11 @@ export default function ScenesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [stageBusy, setStageBusy] = useState(true);
+  const refreshStage = useCallback(async () => {
+    const [items, data] = await Promise.all([api.getScenes(id), api.getProject(id)]);
+    setScenes(items); setProject(data);
+  }, [id]);
   const refresh = useCallback(() => api.getScenes(id).then(setScenes), [id]);
 
   useEffect(() => {
@@ -39,6 +45,7 @@ export default function ScenesPage() {
   }, [id, refresh]);
 
   async function makeImage(scene: Scene) {
+    if (!window.confirm("Regenerate this scene image using the displayed per-image estimate? It will need approval again.")) return;
     setBusyId(scene.id);
     setError("");
     let generationError = "";
@@ -82,7 +89,8 @@ export default function ScenesPage() {
     ? estimates.scene_image.estimated_minutes > project.max_wait_minutes
     : false;
   return <ProjectLayout projectId={id} title="Scene plan">
-    <PageHeading label="04 / SCENE PLAN" title="Plan each frame before creating it." description="Review the visual plan and image prompt, then generate or regenerate each scene image with its own visible estimate." />
+    <PageHeading label="04 / SCENE PLAN" title="Review your generated storyboard." description="All missing scene images generate automatically with approved character references and the stage budget. Approve each result or explicitly regenerate it." />
+    <StageGeneration projectId={id} stage="scenes" onComplete={refreshStage} onActive={setStageBusy} />
     {error && <Notice tone="error">{error}</Notice>}
     {loading ? <Loading label="Loading scene plan and estimates…" /> : !estimates || !project ? <>
       <Button variant="secondary" onClick={() => window.location.reload()}>Retry loading scenes</Button>
@@ -104,26 +112,30 @@ export default function ScenesPage() {
           {scene.approved && <b className="approved-ribbon">✓ APPROVED</b>}
         </div>
         <div className="scene-card-body">
-          <div className="scene-topline"><span>SCENE {String(scene.scene_number).padStart(2, "0")} · ~{scene.estimated_duration}s</span><i className={scene.image_path ? "dot-ready" : "dot-pending"} /></div>
-          <h3>{scene.title}</h3>
+          <h3>{scene.scene_number}. {scene.title}</h3>
+          <details className="card-details"><summary>Scene details and review</summary><p>Beat {scene.beat_number} / Estimated duration: {scene.estimated_duration} seconds</p>
           <p>{scene.description}</p>
           <dl className="scene-facts">
             <dt>Visual description</dt><dd>{scene.visual_description}</dd>
             <dt>Image prompt</dt><dd>{scene.image_prompt}</dd>
           </dl>
           <div className="card-actions">
-            <Button variant="secondary" disabled={overBudget || overWait || busyId !== null} onClick={() => makeImage(scene)}>
-              {busyId === scene.id ? "Generating image…" : scene.image_path ? "Regenerate image" : "Generate image"}
-            </Button>
-            {scene.image_path && <Button variant={scene.approved ? "ghost" : "primary"} disabled={busyId !== null} onClick={() => approve(scene)}>
+            {scene.image_path && <Button variant="secondary" disabled={stageBusy || overBudget || overWait || busyId !== null} onClick={() => makeImage(scene)}>
+              {busyId === scene.id ? "Generating image…" : "Regenerate image"}
+            </Button>}
+            {scene.image_path && <Button variant={scene.approved ? "ghost" : "primary"} disabled={stageBusy || busyId !== null} onClick={() => approve(scene)}>
               {scene.approved ? "✓ Approved" : "Approve"}
             </Button>}
           </div>
+          </details>
           {busyId === scene.id && <Loading label="Waiting for scene image…" />}
         </div>
       </article>)}</div>
       <Notice>{generated} of {scenes.length} scene images generated. Image prompts and estimated duration remain editable in the story bible workflow.</Notice>
     </>}
-    <div className="workflow-footer"><Button variant="ghost" href={`/projects/${id}/characters`}>← Characters</Button><Button variant="secondary" href={`/projects/${id}/story`}>Edit story bible</Button></div>
+    <div className="workflow-footer"><Button variant="ghost" href={`/projects/${id}/characters`}>← Characters</Button><Button variant="secondary" href={`/projects/${id}/story`}>Edit story bible</Button>
+      {scenes.length > 0 && scenes.every((item) => item.approved) && !stageBusy
+        ? <Button href={`/projects/${id}/timeline`}>Continue to narration and timeline</Button>
+        : <Notice>Approve all scene images before continuing to Timeline.</Notice>}</div>
   </ProjectLayout>;
 }

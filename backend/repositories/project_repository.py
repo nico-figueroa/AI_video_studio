@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
-from models.models import Character, Estimate, GeneratedAsset, Job, Project, Scene
+from models.models import AnimationJob, Character, Estimate, GeneratedAsset, Job, Project, RenderJob, Scene
 
 
 class ProjectRepository:
@@ -15,12 +15,22 @@ class ProjectRepository:
         elif not self.db.in_transaction():
             self.db.begin()
 
-    def require_no_active_job(self, project_id: int) -> None:
+    def require_no_active_job(self, project_id: int, *, excluding_job_id: str | None = None) -> None:
         active = self.db.query(Job).filter(
-            Job.project_id == project_id, Job.status.in_(["queued", "running"])
+            Job.project_id == project_id, Job.status.in_(["queued", "running"]),
+            Job.id != excluding_job_id if excluding_job_id is not None else text("1=1"),
         ).first()
-        if active:
+        render = self.db.query(RenderJob).filter(
+            RenderJob.project_id == project_id, RenderJob.status.in_(["queued", "running"])
+        ).first()
+        animation = self.db.query(AnimationJob).filter(
+            AnimationJob.project_id == project_id, AnimationJob.status.in_(["queued", "running"])
+        ).first()
+        if active or render or animation:
             raise HTTPException(status_code=409, detail="A generation job is already running for this project.")
+        project = self.db.get(Project, project_id)
+        if project is not None and project.status in {"narrating", "generating_audio", "transcribing"}:
+            raise HTTPException(status_code=409, detail="Narration or audio generation is running.")
 
     def lock_project(self, project_id: int) -> None:
         self.db.scalar(

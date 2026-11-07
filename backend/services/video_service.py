@@ -51,7 +51,7 @@ class VideoService:
         scene.status = "generated"
         return output
 
-    def compose(self, project: Project, scenes: list[Scene], duration_minutes: int) -> Path:
+    def compose(self, project: Project, scenes: list[Scene], duration_minutes: float) -> Path:
         if not scenes:
             raise ValueError("A story must include at least one scene before export.")
 

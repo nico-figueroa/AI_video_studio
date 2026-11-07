@@ -1,5 +1,4 @@
 from services.ai.providers.base import AIProvider, AIProviderConfigurationError, AIProviderError
-from services.ai.providers.openai_provider import OpenAIProvider
 
 __all__ = [
     "AIProvider",
@@ -7,3 +6,10 @@ __all__ = [
     "AIProviderError",
     "OpenAIProvider",
 ]
+
+
+def __getattr__(name: str):
+    if name == "OpenAIProvider":
+        from services.ai.providers.openai_provider import OpenAIProvider
+        return OpenAIProvider
+    raise AttributeError(name)

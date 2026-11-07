@@ -8,13 +8,14 @@ import { Button, Notice } from "@/components/ui";
 export default function NewProjectPage() {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
-  const [minutes, setMinutes] = useState(1);
+  const [seconds, setSeconds] = useState(60);
   const [budget, setBudget] = useState(5);
   const [wait, setWait] = useState(20);
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [supplied, setSupplied] = useState(false);
 
   const loadSettings = useCallback(async () => {
     setSettingsLoading(true);
@@ -41,12 +42,12 @@ export default function NewProjectPage() {
     setError("");
     try {
       const project = await api.createProject({
-        prompt,
-        target_minutes: minutes,
+        prompt: prompt || "Build a video from supplied project inputs.",
+        target_seconds: seconds,
         max_budget: budget,
         max_wait_minutes: wait,
       });
-      router.push(`/projects/${project.project_id}/analysis`);
+      router.push(`/projects/${project.project_id}/${supplied ? "inputs" : "analysis"}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create the project.");
       setBusy(false);
@@ -67,9 +68,10 @@ export default function NewProjectPage() {
         <p className="form-intro">Set your creative idea and your limits. We’ll show you what’s possible before anything is generated.</p>
         <form className="create-form" onSubmit={submit}>
           <label htmlFor="prompt">What’s your video about?<span>YOUR IDEA</span></label>
-          <textarea id="prompt" minLength={12} maxLength={4000} required placeholder="A retired astronaut discovers an underwater civilization…" value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+          <label><input type="checkbox" checked={supplied} onChange={(event) => setSupplied(event.target.checked)} /> Start from supplied story, scenes, narration, characters, images or audio</label>
+          <textarea id="prompt" minLength={12} maxLength={4000} required={!supplied} placeholder="A retired astronaut discovers an underwater civilization…" value={prompt} onChange={(event) => setPrompt(event.target.value)} />
           <div className="form-grid">
-            <label htmlFor="minutes">Target length <span>MINUTES</span><input id="minutes" type="number" min={1} max={10} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} /></label>
+            <label htmlFor="seconds">Target length <span>SECONDS</span><input id="seconds" type="number" min={1} max={600} step={1} value={seconds} onChange={(event) => setSeconds(Number(event.target.value))} /></label>
             <label htmlFor="budget">Max budget <span>USD · ESTIMATE CEILING</span><div className="input-prefix"><i>$</i><input id="budget" type="number" min={0} step={0.25} value={budget} disabled={!settingsReady || settingsLoading || busy} onChange={(event) => setBudget(Number(event.target.value))} /></div></label>
             <label htmlFor="wait">Max wait <span>MINUTES</span><input id="wait" type="number" min={1} max={1440} value={wait} disabled={!settingsReady || settingsLoading || busy} onChange={(event) => setWait(Number(event.target.value))} /></label>
           </div>
@@ -77,7 +79,7 @@ export default function NewProjectPage() {
           {!settingsLoading && !settingsReady && <Button type="button" variant="secondary" onClick={loadSettings}>Retry loading project defaults</Button>}
           <Notice>Creating the project does not call an AI provider. The next page shows the model, estimated cost, duration, and call count before you choose to generate a story bible.</Notice>
           {error && <Notice tone="error">{error}</Notice>}
-          <div className="form-actions"><span>Next: review estimate before generation</span><Button type="submit" disabled={busy || settingsLoading || !settingsReady || prompt.trim().length < 12}>{busy ? "Creating project…" : "Review estimate"} {!busy && <span>→</span>}</Button></div>
+          <div className="form-actions"><span>Next: {supplied ? "import and classify inputs" : "review estimate before generation"}</span><Button type="submit" disabled={busy || settingsLoading || !settingsReady || (!supplied && prompt.trim().length < 12)}>{busy ? "Creating project…" : supplied ? "Import supplied inputs" : "Review estimate"} {!busy && <span>→</span>}</Button></div>
         </form>
       </div>
     </main>

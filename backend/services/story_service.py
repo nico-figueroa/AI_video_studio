@@ -2,6 +2,7 @@ from models.models import Character, Project, Scene
 from repositories.project_repository import ProjectRepository
 from schemas.ai_schemas import CharacterBibleData, ScenePlanData
 from services.ai.providers.base import AIProvider, AIProviderError
+from services.scene_motion_planner import SceneMotionPlanner
 
 
 class StoryService:
@@ -18,7 +19,10 @@ class StoryService:
         characters = provider.generate_character_bible(story)
         if not characters.characters:
             raise AIProviderError("The provider returned an empty character bible.")
-        scene_plan = provider.generate_scene_plan(story, characters, project.target_minutes)
+        from services.narrative_analysis_service import NarrativeAnalysisService
+        narrative = provider.generate_narrative_plan(story, characters, project.target_minutes)
+        scene_plan = (NarrativeAnalysisService.flatten(narrative) if narrative else
+                      provider.generate_scene_plan(story, characters, project.target_minutes))
         if not 4 <= len(scene_plan.scenes) <= 12:
             raise AIProviderError("The provider must return between 4 and 12 planned scenes.")
 
@@ -38,11 +42,18 @@ class StoryService:
         project.target_audience = story.target_audience
         project.three_act_structure = story.three_act_structure.model_dump()
         project.status = "analysis_complete"
+        project.story_approved = False
+        project.narration_arc = {}
+        project.narrative_analysis = {}
+        if narrative:
+            NarrativeAnalysisService.store(project, narrative)
         project.characters.extend(self._character_model(item) for item in characters.characters)
         project.scenes.extend(
             self._scene_model(item, index)
             for index, item in enumerate(scene_plan.scenes, start=1)
         )
+        for scene in project.scenes:
+            scene.motion_plan = SceneMotionPlanner().plan(project, scene).model_dump()
 
         return project
 
@@ -58,6 +69,9 @@ class StoryService:
             motivations=item.motivations,
             relationships=item.relationships,
             portrait_prompt=item.portrait_prompt,
+            clothing=item.clothing, age=item.age, distinctive_traits=item.distinctive_traits,
+            negative_prompt=item.negative_prompt,
+            facial_features=item.facial_features,
         )
 
     @staticmethod
@@ -70,6 +84,7 @@ class StoryService:
             image_prompt=item.image_prompt,
             estimated_duration=item.estimated_duration,
             status="pending",
+            beat_number=item.beat_number,
         )
 
     def update(
@@ -82,7 +97,17 @@ class StoryService:
         three_act_structure: dict[str, str],
         characters: list,
         scenes: list,
-    ) -> None:
+    ) -> str:
+        content_changed = (
+            project.title != title or project.story_summary != summary or project.genre != genre
+            or project.target_audience != target_audience or project.three_act_structure != three_act_structure
+        )
+        if {item.id for item in characters} != {item.id for item in project.characters} or len(characters) != len(project.characters):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="Include each character exactly once.")
+        if {item.id for item in scenes} != {item.id for item in project.scenes} or len(scenes) != len(project.scenes):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="Include each scene exactly once.")
         project.title = title
         project.story_summary = summary
         project.genre = genre
@@ -98,15 +123,21 @@ class StoryService:
                     for field in ("name", "description", "appearance")
                 )
                 portrait_prompt_changed = item.portrait_prompt != character.portrait_prompt
+                if any(getattr(character,field)!=getattr(item,field) for field in ("role","personality","motivations","relationships")):
+                    content_changed = True
                 portrait_fields = (
-                    "name", "description", "appearance", "portrait_prompt"
+                    "name", "description", "appearance", "portrait_prompt", "clothing", "age",
+                    "distinctive_traits", "negative_prompt", "facial_features",
                 )
                 if any(getattr(character, field) != getattr(item, field) for field in portrait_fields):
                     character.image_path = None
                     character.approved = False
+                    content_changed = True
+                    character.reference_image_paths = []
                 for field in (
                     "name", "description", "role", "personality", "appearance",
                     "motivations", "relationships", "portrait_prompt",
+                    "clothing", "age", "distinctive_traits", "negative_prompt", "facial_features",
                 ):
                     setattr(character, field, getattr(item, field))
                 if portrait_details_changed and not portrait_prompt_changed:
@@ -138,6 +169,7 @@ class StoryService:
                     scene.image_path = None
                     scene.approved = False
                     scene.status = "pending"
+                    content_changed = True
                 for field in (
                     "title", "description", "visual_description", "image_prompt",
                     "estimated_duration",
@@ -156,4 +188,10 @@ class StoryService:
                         )
                     )
 
+        if content_changed:
+            project.story_approved = False
+            project.narrative_analysis = {}
+        from services.workflow_service import story_revision
+        revision = story_revision(project)
         self.repository.save()
+        return revision

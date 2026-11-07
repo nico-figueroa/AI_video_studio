@@ -214,6 +214,7 @@ backend/database/storage/
 frontend/node_modules/
 frontend/.next/
 frontend/tsconfig.tsbuildinfo
+workers/local_animation/model/
 
 # PyPI configuration file
 .pypirc
