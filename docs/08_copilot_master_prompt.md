@@ -1,5 +1,7 @@
 # GitHub Copilot Agent Master Prompt — Phase 2
 
+This prompt documents the completed Phase 2 scope. Phase 3 is defined by [the production implementation plan](./10_phase_3_implementation_plan.md); its explicit narration/speech/rendering additions supersede the Phase 2-only exclusions below. Preserve provider isolation, estimate/approval gates, and PostgreSQL migration ownership.
+
 Before implementation, read every file under `/docs` and inspect the existing Phase 1 implementation. Follow the scope and contracts in this documentation.
 
 ## Mission

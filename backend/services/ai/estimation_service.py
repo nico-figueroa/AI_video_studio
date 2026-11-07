@@ -122,5 +122,5 @@ class AIEstimationService:
         ]
 
     @staticmethod
-    def scene_count_for(target_minutes: int) -> int:
+    def scene_count_for(target_minutes: float) -> int:
         return min(12, max(4, math.ceil(target_minutes * 2)))

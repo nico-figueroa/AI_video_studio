@@ -1,6 +1,8 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { Estimate, GenerationEstimate, PlanName } from "@/services/api";
+import { WorkflowStatus } from "@/components/workflow-status";
+export { Loading } from "@/components/loading";
 
 export function Button({
   children,
@@ -29,10 +31,6 @@ export function Notice({
   return <div className={`notice notice-${tone}`} role={tone === "error" ? "alert" : "status"}>{children}</div>;
 }
 
-export function Loading({ label = "Loading your studio…" }: { label?: string }) {
-  return <div className="loading"><span className="spinner" />{label}</div>;
-}
-
 export function ProjectLayout({
   projectId,
   title,
@@ -55,11 +53,15 @@ export function ProjectLayout({
         <aside className="project-sidebar">
           <div className="sidebar-project"><div className="eyebrow">{eyebrow}</div><strong>{title || "Untitled project"}</strong></div>
           <nav className="step-nav" aria-label="Project workflow">
+            <Link className="step-link" href={`/projects/${projectId}/inputs`}>Supplied inputs</Link>
             {[
               ["01", "Plan", `/projects/${projectId}/analysis`],
               ["02", "Story", `/projects/${projectId}/story`],
               ["03", "Characters", `/projects/${projectId}/characters`],
               ["04", "Scenes", `/projects/${projectId}/scenes`],
+              ["05", "Timeline", `/projects/${projectId}/timeline`],
+              ["06", "Render", `/projects/${projectId}/render`],
+              ["07", "Your video", `/projects/${projectId}/video`],
             ].map(([number, label, href]) => (
               <Link className="step-link" href={href} key={number}><span>{number}</span>{label}</Link>
             ))}
@@ -67,7 +69,7 @@ export function ProjectLayout({
           </nav>
           <div className="sidebar-note"><span className="status-dot" />AI planning studio <small>Estimate before every call</small></div>
         </aside>
-        <section className="project-content">{children}</section>
+        <section className="project-content"><WorkflowStatus projectId={projectId} />{children}</section>
       </div>
     </main>
   );
@@ -105,7 +107,7 @@ export function GenerationEstimateDisclosure({
       <div><span>ESTIMATED TIME</span><b>~{estimate.estimated_minutes} min</b></div>
       <div><span>ESTIMATED API CALLS</span><b>{estimate.estimated_api_calls}</b></div>
       <div><span>MODEL USAGE</span><b>{estimate.estimated_model_usage}</b></div>
-      <p>{title}. {estimate.notes} Provider billing may differ; requests are not sent until you start generation.</p>
+      <details><summary>Estimate details and limitations</summary><p>{title}. {estimate.notes} Provider billing may differ; requests are not sent until you start generation.</p></details>
     </div>
   );
 }

@@ -30,6 +30,11 @@ class CharacterBibleData(BaseModel):
     motivations: str
     relationships: str
     portrait_prompt: str
+    clothing: str = ""
+    age: str = Field(default="", max_length=120)
+    distinctive_traits: str = ""
+    negative_prompt: str = ""
+    facial_features: str = ""
 
 
 class CharacterBible(BaseModel):
@@ -43,7 +48,21 @@ class ScenePlanData(BaseModel):
     visual_description: str
     image_prompt: str
     estimated_duration: int = Field(ge=1, le=3600)
+    beat_number: int = Field(default=1, ge=1, le=6)
 
 
 class ScenePlan(BaseModel):
     scenes: list[ScenePlanData]
+
+
+class NarrativeBeatData(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    purpose: str = Field(min_length=1, max_length=2000)
+    timeline_progression: str
+    character_introductions: list[str]
+    transition: str
+    scenes: list[ScenePlanData] = Field(min_length=2, max_length=4)
+
+
+class NarrativeScenePlan(BaseModel):
+    beats: list[NarrativeBeatData] = Field(min_length=2, max_length=6)

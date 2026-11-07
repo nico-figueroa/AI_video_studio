@@ -2,7 +2,7 @@ from datetime import datetime
 import os
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.ai.estimation_service import GenerationEstimate
 
@@ -22,9 +22,33 @@ def _default_wait_minutes() -> int:
 
 class ProjectCreate(BaseModel):
     prompt: str = Field(min_length=12, max_length=4000)
-    target_minutes: int = Field(default=1, ge=1, le=10)
+    target_minutes: float = Field(default=1, ge=1 / 60, le=10)
+    target_seconds: int | None = Field(default=None, ge=1, le=600)
     max_budget: float = Field(default_factory=_default_budget, ge=0, le=1000)
     max_wait_minutes: int = Field(default_factory=_default_wait_minutes, ge=1, le=1440)
+
+    @model_validator(mode="after")
+    def normalize_duration(self):
+        if self.target_seconds is not None:
+            if "target_minutes" in self.model_fields_set and round(self.target_minutes * 60) != self.target_seconds:
+                raise ValueError("Supply matching target_seconds and target_minutes, or use only target_seconds.")
+            self.target_minutes = self.target_seconds / 60
+        elif abs(self.target_minutes * 60 - round(self.target_minutes * 60)) > 1e-6:
+            raise ValueError("Target length must be a whole number of seconds.")
+        return self
+
+
+class ProjectRestart(BaseModel):
+    approved: Literal[True]
+    expected_prompt: str
+    prompt: str = Field(min_length=12, max_length=4000)
+    target_seconds: int = Field(ge=1, le=600)
+    max_budget: float = Field(ge=0, le=1000)
+    max_wait_minutes: int = Field(ge=1, le=1440)
+
+
+class DeletionApproval(BaseModel):
+    approved: Literal[True]
 
 
 class ProjectCreated(BaseModel):
@@ -36,7 +60,8 @@ class ProjectSummary(BaseModel):
     id: int
     title: str
     status: str
-    target_minutes: int
+    target_minutes: float
+    target_seconds: int
     selected_plan: str | None
     created_at: datetime
     estimated_cost: float | None = None
@@ -48,6 +73,7 @@ class ProjectDetail(ProjectSummary):
     max_wait_minutes: int
     estimated_spend: float
     video_url: str | None = None
+    render_mode: Literal["local_animation", "still_images"] = "local_animation"
 
 
 class CharacterOut(BaseModel):
@@ -64,6 +90,13 @@ class CharacterOut(BaseModel):
     portrait_prompt: str
     image_path: str | None
     approved: bool
+    clothing: str = ""
+    age: str = Field(default="", max_length=120)
+    distinctive_traits: str = ""
+    negative_prompt: str = ""
+    facial_features: str = ""
+    reference_image_paths: list[str] = Field(default_factory=list)
+    generation_context: dict = Field(default_factory=dict)
 
 
 class CharacterUpdate(BaseModel):
@@ -84,6 +117,9 @@ class SceneOut(BaseModel):
     image_path: str | None
     status: str
     approved: bool
+    motion_plan: dict = Field(default_factory=dict)
+    generation_context: dict = Field(default_factory=dict)
+    beat_number: int = 1
 
 
 class SceneUpdate(BaseModel):
@@ -113,6 +149,7 @@ class StoryUpdate(BaseModel):
 
 class StoryUpdated(BaseModel):
     updated: bool
+    revision: str
 
 
 class EstimateOut(BaseModel):
@@ -162,6 +199,7 @@ class JobOut(BaseModel):
     current_stage: str
     error: str | None = None
     video_url: str | None = None
+    operation: str = "legacy_video"
 
 
 class VideoLink(BaseModel):
@@ -176,7 +214,7 @@ class MetricsOut(BaseModel):
     estimated_time: int
     actual_time: int | None
     total_images: int
-    video_length_seconds: int | None
+    video_length_seconds: float | None
 
 
 class AISettingsOut(BaseModel):

@@ -1,0 +1,9 @@
+This Stability AI Model is licensed under the Stability AI Community License, Copyright © Stability AI Ltd. All Rights Reserved
+
+Powered by Stability AI.
+Model weights are unmodified. Inference uses reduced resolution, fewer sampling
+steps, sequential CPU offload and attention/feed-forward chunking.
+The deployment downloads the upstream license to model/LICENSE.md alongside
+the weights. Include that agreement and this Notice with any authorized
+distribution of the model or a product using it.
+This deployment is enabled only for authorized non-commercial use.

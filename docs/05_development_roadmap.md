@@ -1,5 +1,13 @@
 # Development Roadmap
 
+## Phase 3 local animation extension
+
+See [scope, deployment and verification](./13_local_animation_extension.md).
+Hierarchical narrative plans, continuity bridges/film plans, document formats,
+timestamp alignment and reviewed local SVD generation extend the baseline.
+Instruction-driven character actions remain unsupported by SVD, not completed
+Phase 4 features. This supersedes deferred-animation-only descriptions below.
+
 ## Phase 0 — Scaffold (complete)
 
 FastAPI and Next.js setup, project structure, and local media storage.
@@ -8,7 +16,7 @@ FastAPI and Next.js setup, project structure, and local media storage.
 
 Project workflow prototype, SQLite storage, placeholder planning/images, estimates, and local slideshow export. Phase 2 preserves the existing export but does not extend it.
 
-## Phase 2 — AI Planning Studio (current)
+## Phase 2 — AI Planning Studio (complete)
 
 ### Workstreams
 
@@ -30,6 +38,30 @@ Project workflow prototype, SQLite storage, placeholder planning/images, estimat
 - Settings, bibles, scene plans, and asset paths persist and can be retrieved.
 - The test suite and frontend checks pass.
 
-## Phase 3 — Production Media (not part of this implementation)
+## Phase 3 — End-to-End Production (implemented)
 
-Possible future work: animation, voice, music, and final-video generation. Do not start Phase 3 functionality in Phase 2.
+- Provider-based narration and standard synthetic speech with estimates and explicit approval.
+- PostgreSQL narration/audio metadata, video records, render snapshots, and resumable scene checkpoints; Alembic `0002_phase3`.
+- Scene timeline with ordering, duration validation, source invalidation, and revision protection.
+- Local FFmpeg image zoom/pan, fade transitions, narration mixing, and H.264/AAC MP4 output.
+- Timeline, render approval/progress/recovery, and video playback/download routes.
+- Real FFmpeg encode/decode tests, deterministic provider tests, isolated PostgreSQL upgrade/production verification, frontend typecheck/build.
+
+See the [implementation plan](./10_phase_3_implementation_plan.md) and [workflow](./11_user_workflow.md).
+
+## Deferred beyond Phase 3
+
+### Phase 3 quality upgrade (implemented; not Phase 4)
+
+- Documentation-first landing, global readiness/review status, nonrepeating localized-message catalogues.
+- Explicit review guards and auditable, state-bound Continue Anyway confirmations.
+- Adaptive import/classification; preserved story/script/scenes/characters/images/audio; missing-only planning and separately approved provider transcription.
+- Persistent character/reference and story/event context for all artwork; honest local coverage scoring.
+- One connected narration arc with validated scene bridges and whole-story invalidation.
+- Persisted tone-aware motion/focus/pacing, actual crossfade/black/white/blur exports and simulated parallax; narration duration preserved.
+- AnimationProvider contract and deferred prompts only; no animation execution.
+- Provider-fake service/API checks, malformed uploads, review/staleness tests, actual transition encode/decode, PostgreSQL migration/production tests, frontend build/typecheck and shuffle-cycle tests.
+
+See the [quality upgrade plan](./12_phase_3_quality_upgrade.md). Paid-provider identity/coherence still needs human review; no numerical score guarantees it.
+
+Animation, lip sync, voice cloning, generated motion, music generation, distributed workers, cloud GPU orchestration, and RunPod integration are not implemented.

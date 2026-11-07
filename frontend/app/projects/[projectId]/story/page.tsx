@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { api, type GenerationEstimates, type Story } from "@/services/api";
+import { api, type GenerationEstimates, type QualityReport, type Story } from "@/services/api";
 import { Button, GenerationEstimateDisclosure, Loading, Notice, PageHeading, ProjectLayout } from "@/components/ui";
 
 export default function StoryPage() {
@@ -13,12 +13,14 @@ export default function StoryPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [quality, setQuality] = useState<QualityReport | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getStory(id), api.getGenerationEstimates(id)])
-      .then(([storyData, estimateData]) => {
+    Promise.all([api.getStory(id), api.getGenerationEstimates(id), api.getQuality(id)])
+      .then(([storyData, estimateData, qualityData]) => {
         setStory(storyData);
         setEstimates(estimateData);
+        setQuality(qualityData);
       })
       .catch((reason: Error) => setError(reason.message));
   }, [id]);
@@ -34,8 +36,10 @@ export default function StoryPage() {
     setBusy(true);
     setError("");
     try {
-      await api.saveStory(id, story);
+      const savedStory = await api.saveStory(id, story);
+      if (continueNext) await api.approveStory(id, savedStory.revision, true);
       setStory(await api.getStory(id));
+      setQuality(await api.getQuality(id));
       setSaved(true);
       if (continueNext) router.push(`/projects/${id}/characters`);
     } catch (reason) {
@@ -43,6 +47,18 @@ export default function StoryPage() {
     } finally {
       setBusy(false);
     }
+
+  }
+
+  async function approveStory() {
+    if (!story) return;
+    setBusy(true); setError("");
+    try {
+      const saved = await api.saveStory(id, story);
+      setQuality(await api.approveStory(id, saved.revision, true));
+      setSaved(true);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not approve story."); }
+    finally { setBusy(false); }
   }
 
   async function regenerate() {
@@ -63,7 +79,9 @@ export default function StoryPage() {
       <PageHeading label="02 / STORY REVIEW" title="The story is yours to shape." description="Review the story bible and scene beats. Edit any detail before moving on to characters." />
       {estimates && <GenerationEstimateDisclosure estimate={estimates.planning} title="This estimate applies if you regenerate the story, character bible, and scene plan." />}
       {error && <Notice tone="error">{error}</Notice>}{saved && <Notice tone="success">Story bible saved.</Notice>}
-      <div className="editor-panel">
+      <Notice>{quality?.reviews.find((item) => item.stage === "story")?.approved ? "Saved story version is approved. Any content edits require a fresh approval." : "Story approval is required before character artwork. Saving or continuing does not approve it."}</Notice>
+      {busy && <Loading label="Working on the story bible..." workflow="story" />}
+      <details className="editor-panel"><summary>Story text and three-act structure</summary>
         <label className="field-label" htmlFor="story-title">STORY TITLE</label>
         <input id="story-title" className="text-input title-input" value={story.title} onChange={(event) => setStory({ ...story, title: event.target.value })} />
         <label className="field-label" htmlFor="story-genre">GENRE</label>
@@ -86,13 +104,14 @@ export default function StoryPage() {
             })}
           />
         </article>)}</div>
-      </div>
+      </details>
       <div className="section-title"><div><div className="eyebrow">THE PEOPLE IN YOUR STORY</div><h2>Character bible</h2></div><span>{story.characters.length} characters</span></div>
-      <div className="character-mini-grid">{story.characters.map((character, index) => <div className="character-mini" key={character.id}><div className={`character-monogram monogram-${index}`}>{character.name.slice(0, 1)}</div><div><input aria-label="Character name" className="inline-edit" value={character.name} onChange={(event) => setStory({ ...story, characters: story.characters.map((item) => item.id === character.id ? { ...item, name: event.target.value } : item) })} /><textarea aria-label={`Description for ${character.name}`} value={character.description} onChange={(event) => setStory({ ...story, characters: story.characters.map((item) => item.id === character.id ? { ...item, description: event.target.value } : item) })} /></div></div>)}</div>
+      <div className="character-mini-grid">{story.characters.map((character, index) => <details className="collapsible-section" key={character.id}><summary>{character.name}</summary><div className="character-mini"><div className={`character-monogram monogram-${index}`}>{character.name.slice(0, 1)}</div><div><input aria-label="Character name" className="inline-edit" value={character.name} onChange={(event) => setStory({ ...story, characters: story.characters.map((item) => item.id === character.id ? { ...item, name: event.target.value } : item) })} /><textarea aria-label={`Description for ${character.name}`} value={character.description} onChange={(event) => setStory({ ...story, characters: story.characters.map((item) => item.id === character.id ? { ...item, description: event.target.value } : item) })} /></div></div></details>)}</div>
       <div className="section-title"><div><div className="eyebrow">THE STORYBOARD</div><h2>Scene breakdown</h2></div><span>{story.scenes.length} scenes</span></div>
-      <div className="story-scenes">{story.scenes.map((scene, index) => <div className="story-scene" key={scene.id}>
+      <div className="story-scenes">{story.scenes.map((scene, index) => <details className="collapsible-section" key={scene.id}><summary>{scene.scene_number}. {scene.title}</summary><div className="story-scene">
         <div className="scene-number">{String(scene.scene_number).padStart(2, "0")}</div>
         <div>
+          <p>Beat {scene.beat_number} / Scene {scene.scene_number}</p>
           <label className="field-label" htmlFor={`scene-title-${scene.id}`}>SCENE TITLE</label>
           <input id={`scene-title-${scene.id}`} className="inline-edit" value={scene.title} onChange={(event) => setStory({ ...story, scenes: story.scenes.map((item) => item.id === scene.id ? { ...item, title: event.target.value } : item) })} />
           <label className="field-label" htmlFor={`scene-description-${scene.id}`}>DESCRIPTION</label>
@@ -104,8 +123,8 @@ export default function StoryPage() {
           <label className="field-label" htmlFor={`scene-duration-${scene.id}`}>ESTIMATED DURATION (SECONDS)</label>
           <input id={`scene-duration-${scene.id}`} type="number" min={1} max={3600} value={scene.estimated_duration} onChange={(event) => setStory({ ...story, scenes: story.scenes.map((item) => item.id === scene.id ? { ...item, estimated_duration: Number(event.target.value) } : item) })} />
         </div>
-      </div>)}</div>
-      <div className="workflow-footer"><Button variant="ghost" href={`/projects/${id}/analysis`}>← Back to plan</Button><div><Button variant="secondary" disabled={busy} onClick={regenerate}>Regenerate story</Button><Button variant="secondary" disabled={busy} onClick={() => save()}>{busy ? "Saving…" : "Save changes"}</Button><Button disabled={busy} onClick={() => save(true)}>Continue to characters <span>→</span></Button></div></div>
+      </div></details>)}</div>
+      <div className="workflow-footer"><Button variant="ghost" href={`/projects/${id}/analysis`}>← Edit prompt / Plan</Button><div><Button variant="secondary" disabled={busy} onClick={regenerate}>Regenerate story</Button><Button variant="secondary" disabled={busy} onClick={() => save()}>{busy ? "Saving…" : "Save changes"}</Button><Button variant="secondary" disabled={busy} onClick={approveStory}>Save and explicitly approve story</Button><Button disabled={busy} onClick={() => save(true)}>Save, approve story and continue to Characters <span>→</span></Button></div></div>
     </>}
   </ProjectLayout>;
 }
